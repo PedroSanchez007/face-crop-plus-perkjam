@@ -17,3 +17,7 @@ _static
 _templates
 __pycache__
 *.egg-info
+
+# Ignore PyCharm IDE folder
+.idea/
+
