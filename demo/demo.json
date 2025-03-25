@@ -1,5 +1,5 @@
 {
-    "input_dir": "input_images",
+    "input_dir": "demo/input_images",
     "output_dir": null,
     "output_size": 256,
     "output_format": "jpg",

@@ -54,9 +54,9 @@ setuptools.setup(
     packages = setuptools.find_packages(where="src"),
     entry_points={
         "console_scripts": [
-            "face-crop-plus=face_crop_plus.__main__:main",
-            "face_crop_plus=face_crop_plus.__main__:main",
-            "fcp=face_crop_plus.__main__:main",
+            "face-crop-plus-perkjam=face_crop_plus.__main__:main",
+            "face_crop_plus_perkjam=face_crop_plus.__main__:main",
+            "fcpp=face_crop_plus.__main__:main",
         ]
     },
     python_requires = ">=3.10"
