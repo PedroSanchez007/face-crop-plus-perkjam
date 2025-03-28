@@ -2,43 +2,14 @@
 import numpy as np
 import torch
 
-# Import your detector class; adjust the import based on your repo structure.
+# Import your detector class and helper functions.
 from face_crop_plus.models import RetinaFace
-
-def extend_bbox(bbox, image_shape, expansion_ratio):
-    """
-    Extends a bounding box outward by a given percentage,
-    stopping at the image boundaries.
-
-    Args:
-        bbox (tuple or list): Original bounding box (x1, y1, x2, y2).
-        image_shape (tuple): Image shape as (height, width, ...).
-        expansion_ratio (float): Fraction to extend each side (e.g., 0.2 for 20% expansion).
-
-    Returns:
-        tuple: Extended bounding box (new_x1, new_y1, new_x2, new_y2), clipped to image boundaries.
-    """
-    x1, y1, x2, y2 = bbox
-    width = x2 - x1
-    height = y2 - y1
-
-    # Calculate expansion amounts.
-    delta_x = expansion_ratio * width
-    delta_y = expansion_ratio * height
-
-    # Compute new coordinates, ensuring they stay within image bounds.
-    new_x1 = int(max(0, x1 - delta_x))
-    new_y1 = int(max(0, y1 - delta_y))
-    image_height, image_width = image_shape[:2]
-    new_x2 = int(min(image_width, x2 + delta_x))
-    new_y2 = int(min(image_height, y2 + delta_y))
-
-    return new_x1, new_y1, new_x2, new_y2
+from face_crop_plus.utils import extend_bbox, scale_bbox
 
 def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
     """
-    Uses the detector to compute the face bounding box, extends it,
-    and draws the extended box on the original image.
+    Uses the detector to compute the face bounding box, scales it back to the original
+    image dimensions, extends it, prints debug information, and draws the extended box on the image.
 
     Args:
         image (np.ndarray): Original image in BGR format.
@@ -47,6 +18,9 @@ def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
     Returns:
         np.ndarray: A copy of the original image with the extended bounding box drawn.
     """
+    # Define the resized shape used by the detector.
+    resized_shape = (1024, 1024)
+
     # Initialize the detector (using strategy "best" as per your config).
     device = torch.device("cpu")
     detector = RetinaFace(strategy="best", vis=0.6)
@@ -54,11 +28,12 @@ def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
 
     # Convert image from BGR to RGB since the detector expects RGB.
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    # Create a torch tensor of shape (1, 3, H, W) and float type.
-    image_tensor = torch.from_numpy(image_rgb).permute(2, 0, 1).unsqueeze(0).float()
+    # Create a torch tensor of shape (1, 3, H, W) from the resized image.
+    # Here, we assume the detector resizes the image internally to 1024x1024.
+    # In many pipelines, the image is resized to a common size for batching.
+    image_tensor = torch.from_numpy(cv2.resize(image_rgb, resized_shape)).permute(2, 0, 1).unsqueeze(0).float()
 
     # Call the detector's predict function.
-    # Expected to return landmarks, indices, and bounding boxes.
     landmarks, indices, bboxes = detector.predict(image_tensor)
 
     # If no faces were detected, return the original image.
@@ -66,11 +41,20 @@ def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
         print("No faces detected.")
         return image.copy()
 
-    # Since strategy is "best", assume one face is returned.
-    bbox = bboxes[0]  # [x1, y1, x2, y2]
+    # For strategy "best", assume one face is returned.
+    bbox_resized = bboxes[0]  # Bounding box in the resized coordinate system
 
-    # Compute the extended bounding box.
-    extended_bbox = extend_bbox(bbox, image.shape, expansion_ratio)
+    # Print the original image size (in case it differs from the resized shape).
+    print("Original image size (height, width):", image.shape[:2])
+    print("Detector bounding box (resized coordinates):", bbox_resized)
+
+    # Scale the bounding box from resized (1024x1024) back to the original dimensions.
+    bbox_original = scale_bbox(bbox_resized, image.shape, resized_shape)
+    print("Scaled bounding box (original coordinates):", bbox_original)
+
+    # Extend the scaled bounding box.
+    extended_bbox = extend_bbox(bbox_original, image.shape, expansion_ratio)
+    print("Extended bounding box coordinates:", extended_bbox)
 
     # Draw the extended bounding box on a copy of the original image.
     image_with_box = image.copy()
@@ -85,16 +69,13 @@ def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
     return image_with_box
 
 if __name__ == "__main__":
-    # Replace this path with your test image path.
-    image_path = "C:/source/repos/face-crop-plus-perkjam/demo/input_images/000004.jpg"
+    # Replace with your test image path.
+    image_path = "C:/source/repos/face-crop-plus-perkjam/demo/input_images/000001.jpg"
     image = cv2.imread(image_path)
     if image is None:
         raise ValueError("Could not load the test image.")
 
-    # Get the image with the extended detector's bounding box drawn on it.
     result_image = show_extended_bbox_from_detector(image, expansion_ratio=0.2)
-
-    # Display the result in a single window.
     cv2.imshow("Extended Detector Bounding Box", result_image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()

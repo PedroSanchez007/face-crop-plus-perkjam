@@ -314,30 +314,35 @@ def as_batch(
     size = (size, size) if isinstance(size, int) else size
     border_type = getattr(cv2, f"BORDER_{padding_mode.upper()}")
 
-    for image in images:    
-        # Get width, height, padding & check interpolation
-        (h, w), m = image.shape[:2], max(*image.shape[:2])
+    for image in images:
+        (h, w) = image.shape[:2]
+        m = max(h, w)
+        # Choose interpolation based on image size relative to target.
         interpolation = cv2.INTER_AREA if m > max(size) else cv2.INTER_CUBIC
 
-        if (ratio_w := size[0] / w) < (ratio_h := size[1] / h):
-            # Based on width 
-            unscale = ratio_w
-            (ww,hh) = size[0], int(h * ratio_w)
-            padding = [(size[1] - hh) // 2, (size[1] - hh + 1) // 2, 0, 0]
-        else:
-            # Based on height
-            unscale = ratio_h
-            (ww,hh) = int(w * ratio_h), size[1]
-            padding = [0, 0, (size[0] - ww) // 2, (size[0] - ww + 1) // 2]
-    
-        # Pad the lower dimension with specific border type, then resize
-        image = cv2.resize(image, (ww, hh), interpolation=interpolation)
-        image = cv2.copyMakeBorder(image, *padding, borderType=border_type)
+        # Calculate scale ratios.
+        ratio_w = size[0] / w
+        ratio_h = size[1] / h
 
-        # Append to lists
-        img_batch.append(image)
+        if ratio_w < ratio_h:
+            # Resize based on width.
+            unscale = ratio_w
+            new_width, new_height = size[0], int(h * ratio_w)
+            padding_vals = [(size[1] - new_height) // 2, (size[1] - new_height + 1) // 2, 0, 0]
+        else:
+            # Resize based on height.
+            unscale = ratio_h
+            new_width, new_height = int(w * ratio_h), size[1]
+            padding_vals = [0, 0, (size[0] - new_width) // 2, (size[0] - new_width + 1) // 2]
+
+        # Resize image.
+        resized_image = cv2.resize(image, (new_width, new_height), interpolation=interpolation)
+        # Apply padding.
+        padded_image = cv2.copyMakeBorder(resized_image, *padding_vals, borderType=border_type)
+
+        img_batch.append(padded_image)
         unscales.append(np.array(unscale))
-        paddings.append(np.array(padding))
+        paddings.append(np.array(padding_vals))
 
     return np.stack(img_batch), np.stack(unscales), np.stack(paddings)
 
@@ -451,3 +456,57 @@ def clean_names(
             src = os.path.join(input_dir, filename)
             tgt = os.path.join(input_dir, name + ext)
             os.rename(src, tgt)
+
+def scale_bbox(bbox, original_shape, resized_shape):
+    """
+    Scales the bounding box coordinates from the resized image coordinate system
+    back to the original image dimensions.
+
+    Args:
+        bbox (tuple or list): The bounding box (x1, y1, x2, y2) from the resized image.
+        original_shape (tuple): Original image shape as (height, width, ...).
+        resized_shape (tuple): Resized image shape as (height, width).
+
+    Returns:
+        tuple: Scaled bounding box (x1, y1, x2, y2) in the original image coordinate system.
+    """
+    orig_h, orig_w = original_shape[:2]
+    resized_h, resized_w = resized_shape[:2]
+    scale_x = orig_w / resized_w
+    scale_y = orig_h / resized_h
+    return (
+        bbox[0] * scale_x,
+        bbox[1] * scale_y,
+        bbox[2] * scale_x,
+        bbox[3] * scale_y,
+    )
+
+def extend_bbox(bbox, image_shape, expansion_ratio):
+    """
+    Extends a bounding box outward by a given percentage,
+    stopping at the image boundaries.
+
+    Args:
+        bbox (tuple or list): The original bounding box (x1, y1, x2, y2).
+        image_shape (tuple): The shape of the image as (height, width, ...).
+        expansion_ratio (float): Fraction to extend each side (e.g., 0.2 for 20% expansion).
+
+    Returns:
+        tuple: Extended bounding box (new_x1, new_y1, new_x2, new_y2), clipped to image boundaries.
+    """
+    x1, y1, x2, y2 = bbox
+    width = x2 - x1
+    height = y2 - y1
+
+    # Calculate expansion amounts.
+    delta_x = expansion_ratio * width
+    delta_y = expansion_ratio * height
+
+    # Compute new coordinates, ensuring they stay within image bounds.
+    new_x1 = int(max(0, x1 - delta_x))
+    new_y1 = int(max(0, y1 - delta_y))
+    image_height, image_width = image_shape[:2]
+    new_x2 = int(min(image_width, x2 + delta_x))
+    new_y2 = int(min(image_height, y2 + delta_y))
+
+    return new_x1, new_y1, new_x2, new_y2

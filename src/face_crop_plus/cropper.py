@@ -20,8 +20,9 @@ from .utils import (
     as_tensor,
     read_images,
     as_batch,
+    extend_bbox,
+    scale_bbox
 )
-
 
 class Cropper():
     """Face cropper class with bonus features.
@@ -153,7 +154,8 @@ class Cropper():
         batch_size: int = 8,
         num_processes: int = 1,
         device: str | torch.device = "cpu",
-        crop_mode: str = "aligned",  # "aligned" or "bbox"
+        crop_mode: str = "bbox",  # "aligned" or "bbox"
+        expansion_ratio: float = 1,
         **kwargs):
         """Initializes the cropper.
 
@@ -318,6 +320,7 @@ class Cropper():
         self.num_processes = num_processes
         self.device = device
         self.crop_mode = crop_mode
+        self.expansion_ratio = expansion_ratio
 
         # The only option for STD
         self.num_std_landmarks = 5
@@ -746,111 +749,67 @@ class Cropper():
                     group_dir += "_mask"
                     masks = masks[[mask_indices.index(i) for i in group_idx]]
                     self.save_group(masks, file_name_group, group_dir)
-    
-    def process_batch(self, file_names: list[str], input_dir: str, output_dir: str):
-        """Extracts faces from a batch of images and saves them.
 
-        Takes file names, input directory, reads images and extracts 
-        faces and saves them to the output directory. This method works 
-        as follows:
-
-            1. *Batch generation* - a batch of images form the given 
-               file names is generated. Each images is padded and 
-               resized to ``self.resize_size`` while keeping the same 
-               aspect ratio.
-            2. *Landmark detection* - detection model is used to predict 
-               5 landmarks for each face in each image, unless the 
-               landmarks were already initialized  or face alignment + 
-               cropping is not needed.
-            3. *Image enhancement* - some images are enhanced if the 
-               faces compared with the image size are small. If 
-               landmarks are None, i.e., if no alignment + cropping was 
-               desired, all images are enhanced. Enhancement is not done 
-               if ``self.enh_threshold`` is None.
-            4. *Image grouping* - each face image is parsed, i.e., a map 
-               of face attributes is generated. Based on those 
-               attributes, each face image is put to a corresponding 
-               group. There may also be mask groups, in which case masks 
-               for each image in that group are also generated. Faces 
-               are not parsed if ``self.attr_groups`` and 
-               ``self.mask_groups`` are both None.
-            5. *Image saving* - each face image (and a potential mask) 
-               is saved according to the group structure (if there is 
-               any).
-        
-        Note:
-            If detection model is not used, then batch is just a list of 
-            loaded images of different dimensions.
+    def crop_bbox_extended(self, images, indices, bboxes):
+        """
+        Crops faces from images using extended bounding boxes.
 
         Args:
-            file_names: The list of image file names (not full paths). 
-                All the images should be in the same directory.
-            input_dir: Path to input directory with image files.
-            output_dir: Path to output directory to save the extracted 
-                face images.
+            images (list[np.ndarray]): List of original images in their original dimensions.
+            indices (list[int]): List mapping each detection to its corresponding image index.
+            bboxes (np.ndarray): Array of shape (N, 4) with bounding boxes in the resized coordinate system (e.g., 1024x1024).
+
+        Returns:
+            list[np.ndarray]: List of cropped face images.
         """
-        # Read images and filter valid corresponding file names
+        # Define the resized shape used for detection.
+        resized_shape = (1024, 1024)
+
+        cropped_faces = []
+        for i, img_idx in enumerate(indices):
+            # Print debugging info.
+            print(f"Image {img_idx} original size:", images[img_idx].shape[:2])
+
+            # Scale the detector's bounding box back to original image coordinates.
+            bbox_resized = bboxes[i]
+            bbox_original = scale_bbox(bbox_resized, images[img_idx].shape, resized_shape)
+            print(f"Scaled bounding box for detection {i}: {tuple(float(x) for x in bbox_original)}")
+
+            # Extend the scaled bounding box.
+            ext_bbox = extend_bbox(bbox_original, images[img_idx].shape, self.expansion_ratio)
+            print(f"Extended bounding box for detection {i}: {tuple(float(x) for x in ext_bbox)}")
+
+            # Crop the image using the extended bounding box.
+            cropped_face = images[img_idx][ext_bbox[1]:ext_bbox[3], ext_bbox[0]:ext_bbox[2]]
+            cropped_faces.append(cropped_face)
+        return cropped_faces
+
+    def process_batch(self, file_names: list[str], input_dir: str, output_dir: str):
+        """
+        Processes a batch of images.
+        """
+        # Read images from the input directory.
         images, file_names = read_images(file_names, input_dir)
 
-        if self.landmarks is None and self.det_model is None:
-            # One-to-one image to index mapping and no landmarks
-            indices, landmarks = list(range(len(file_names))), None
-        elif self.landmarks is not None:
-            # Initialize empty idx lists and None paddings
-            indices, indices_ldm, paddings = [], [], None
+        # Resize images for detection.
+        images_batch, _, paddings = as_batch(images, self.resize_size)  # resized to self.resize_size (e.g., 1024x1024)
+        images_batch = as_tensor(images_batch, self.device)
 
-            for i, file_name in enumerate(file_names):
-                # Check the indices of landmark sets in landmarks file
-                indices_i = np.where(file_name == self.landmarks[1])[0]
-
-                if len(indices_i) == 0:
-                    # Has no landmarks
-                    continue
-
-                # Update img & ldm file name indices
-                indices.extend([i] * len(indices_i))
-                indices_ldm.extend(indices_i.tolist())
-            
-            # Set landmarks according to the indices
-            landmarks = self.landmarks[0][indices_ldm]
-            
-        elif self.det_model is not None:
-             # Create a batch of images (with faces) and their paddings
-            images, _, paddings = as_batch(images, self.resize_size)
-            images, paddings = as_tensor(images, self.device), paddings
-
-            # If landmarks were not given, predict, undo padding
-            landmarks, indices, bboxes = self.det_model.predict(images)
-            landmarks -= paddings[indices][:, None, [2, 0]]
+        # Call the detector's predict function.
+        landmarks, indices, bboxes = self.det_model.predict(images_batch)
 
         if landmarks is not None and len(landmarks) == 0:
-            # Nothing to save
             return
-            
-        if landmarks is not None and landmarks.shape[1] != self.num_std_landmarks:
-            # Compute the mean landmark coordinates from retrieved slices
-            slices = get_ldm_slices(self.num_std_landmarks, landmarks.shape[1])            
-            landmarks = np.stack([landmarks[:, s].mean(1) for s in slices], 1)
 
-        if self.enh_model is not None:
-            # Enhance some images
-            images = as_tensor(images, self.device)
-            images = self.enh_model.predict(images, landmarks, indices)
+        if self.crop_mode == "bbox":
+            # Use the extended bounding box cropping flow.
+            cropped_faces = self.crop_bbox_extended(as_numpy(images), indices, bboxes)
+            self.save_group(cropped_faces, file_names[indices], output_dir)
+        else:
+            # Use the existing landmark alignment flow.
+            cropped_faces = self.crop_align(as_numpy(images), paddings, indices, landmarks)
+            self.save_group(cropped_faces, file_names[indices], output_dir)
 
-        # Convert to numpy images, initialize groups
-        images, groups = as_numpy(images), (None, None)
-
-        if landmarks is not None:    
-            # Generate source, target landmarks, estimate & apply transform
-            images = self.crop_align(images, paddings, indices, landmarks)
-
-        if self.par_model is not None:
-            # Predict attribute and mask groups if face parsing desired
-            groups = self.par_model.predict(as_tensor(images, self.device))
-
-        # Pick file names for each face, save faces (by groups if exist)
-        self.save_groups(images, file_names[indices], output_dir, *groups)
-    
     def process_dir(
         self, 
         input_dir: str, 
