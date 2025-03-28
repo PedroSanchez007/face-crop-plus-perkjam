@@ -153,7 +153,8 @@ class Cropper():
         batch_size: int = 8,
         num_processes: int = 1,
         device: str | torch.device = "cpu",
-    ):
+        crop_mode: str = "aligned",  # "aligned" or "bbox"
+        **kwargs):
         """Initializes the cropper.
 
         Initializes class attributes. 
@@ -316,6 +317,7 @@ class Cropper():
         self.batch_size = batch_size
         self.num_processes = num_processes
         self.device = device
+        self.crop_mode = crop_mode
 
         # The only option for STD
         self.num_std_landmarks = 5
@@ -818,7 +820,7 @@ class Cropper():
             images, paddings = as_tensor(images, self.device), paddings
 
             # If landmarks were not given, predict, undo padding
-            landmarks, indices = self.det_model.predict(images)
+            landmarks, indices, bboxes = self.det_model.predict(images)
             landmarks -= paddings[indices][:, None, [2, 0]]
 
         if landmarks is not None and len(landmarks) == 0:

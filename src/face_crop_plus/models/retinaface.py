@@ -210,261 +210,171 @@ class RetinaFace(nn.Module, LoadMixin):
         ), dim=2)
 
         return landms
-    
+
     def filter_preds(
-        self,
-        scores: torch.Tensor,
-        bboxes: torch.Tensor,
-        landms: torch.Tensor,
+            self,
+            scores: torch.Tensor,
+            bboxes: torch.Tensor,
+            landms: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
-        """Filters predictions for identified faces for each sample.
-        
-        This method works as follows:
-
-            1. First, it filters out bad predictions based on
-               ``self.vis_threshold``.
-            2. Then it gathers all the remaining predictions across the
-               batch dimension, i.e., the batch dimension becomes not
-               the number of samples but the number of filtered out
-               predictions.
-            3. It loops for each set of filtered predictions per sample
-               sorting each set of confidence scores from best to worst.
-            4. For each set of confidence scores, it identifies distinct 
-               faces and keeps the record of which indices to keep. At 
-               this stage it uses ``self.nms_threshold`` to remove the 
-               duplicate face predictions.
-            5. Finally, it applies the kept indices for each person
-               (each face) to select corresponding bounding boxes and
-               landmarks.
-
-        Args:
-            scores: The confidence score predictions of shape
-                (N, out_dim).
-            bboxes: The bounding boxes for each face of shape
-                (N, out_dim, 4) where the last 4 numbers correspond to
-                start and end coordinates - x1, y1, x2, y2.
-            landms: The landmarks for each face of shape
-                (N, out_dim, num_landmarks * 2) where the last dim 
-                corresponds to landmark coordinates x1, y1, ... . By
-                default, num_landmarks is 5.
-
-        Returns:
-            A tuple where the first element is a torch tensor of shape
-            (``num_faces``, 4), the second element is a torch tensor of
-            shape (``num_faces``, ``num_landmarks`` * 2) and the third 
-            element is a list of length ``num_faces``. First and second 
-            elements correspond to bounding boxes and landmarks for each 
-            face across all samples and the third element provides an 
-            index for each bounding box/set of landmarks that identifies
-            which sample that box/set (or that face) is extracted from
-            (because each sample can have multiple faces).
         """
-        # Init variables, identify masks to filter best faces
-        cumsum, people_indices, sample_indices = 0, [], []
+        Filters predictions for each sample and returns:
+          - filtered_landms: Landmarks for each kept detection.
+          - filtered_bboxes: Bounding boxes for each kept detection.
+          - sample_indices: A list mapping each detection to its original image index.
+        """
+        cumsum = 0
+        people_indices = []
+        sample_indices = []
+        # Create a mask of predictions above the visual threshold.
         masks = scores > self.vis_threshold
 
-        # Flatten across batch filtered predictions, compute face areas
-        scores, bboxes, landms = scores[masks], bboxes[masks], landms[masks]
-        areas = (bboxes[:, 2]-bboxes[:, 0]+1) * (bboxes[:, 3]-bboxes[:, 1]+1)
+        # Apply the mask to scores, bboxes, and landmarks.
+        scores = scores[masks]
+        bboxes = bboxes[masks]
+        landms = landms[masks]
+        # Compute the area of each bounding box.
+        areas = (bboxes[:, 2] - bboxes[:, 0] + 1) * (bboxes[:, 3] - bboxes[:, 1] + 1)
 
+        # Process detections image by image.
         for i, num_valid in enumerate(masks.sum(dim=1)):
-            # Extract all face preds for a single sample
-            start, end, keep = cumsum, cumsum+num_valid, []
-            bbox, area = bboxes[start:end], areas[start:end]
+            start = cumsum
+            end = cumsum + num_valid
+            keep = []
+            bbox = bboxes[start:end]
+            area = areas[start:end]
             scores_sorted = scores[start:end].argsort(descending=True)
 
             while scores_sorted.numel() > 0:
-                # Append best face's index to keep
-                keep.append(j := scores_sorted[0])
-                
-                # Find coordinates that at least bound the current face
+                j = scores_sorted[0]
+                keep.append(j)
+                if scores_sorted.numel() == 1:
+                    break
+                # Compute the intersection over union (IoU) between the chosen bbox and the rest.
                 xy1 = torch.maximum(bbox[j, :2], bbox[scores_sorted[1:], :2])
                 xy2 = torch.minimum(bbox[j, 2:], bbox[scores_sorted[1:], 2:])
-
-                # Compute width and height for the current minimal face
-                w = torch.maximum(torch.tensor(0.0), xy2[:, 0] - xy1[:, 0] + 1)
-                h = torch.maximum(torch.tensor(0.0), xy2[:, 1] - xy1[:, 1] + 1)
-
-                # Compute nms for identifying areas for the current face
-                ovr = (a := w * h) / (area[j] + area[scores_sorted[1:]] - a)
-                
-                # Filter out current face, keep next best scores
+                w = torch.clamp(xy2[:, 0] - xy1[:, 0] + 1, min=0)
+                h = torch.clamp(xy2[:, 1] - xy1[:, 1] + 1, min=0)
+                inter = w * h
+                ovr = inter / (area[j] + area[scores_sorted[1:]] - inter)
+                # Keep detections with overlap less than the NMS threshold.
                 inds = torch.where(ovr <= self.nms_threshold)[0]
                 scores_sorted = scores_sorted[inds + 1]
-            
-            # Update people and sample indices, increment cumsum
+
             people_indices.extend([cumsum + k for k in keep])
             sample_indices.extend([i] * len(keep))
             cumsum += num_valid
-        
-        # Select the final landms and bboxes
-        bboxes = bboxes[people_indices, :]
-        landms = landms[people_indices, :]
-        
-        return landms, bboxes, sample_indices
-    
+
+        filtered_bboxes = bboxes[people_indices, :]
+        filtered_landms = landms[people_indices, :]
+
+        return filtered_landms, filtered_bboxes, sample_indices
+
     def take_by_strategy(
-        self,
-        landms: torch.Tensor,
-        bboxes: torch.Tensor,
-        idx: list[int],
-    ) -> tuple[torch.Tensor, list[int]]:
-        """Filters landmarks according to strategy.
-
-        This method takes a batch of landmarks and bounding boxes (one
-        for each face) filters only specific landmarks by a specific
-        strategy. Here are the following cases of strategy:
-
-            * "all" - effectively, nothing is done and simply the
-              already passed values `landms` and `idx` are returned 
-              without any changes.
-            * "best" - the very first set of landmarks for each image 
-              image is returned (the first set is the best set because
-              the landmarks were sorted when duplicates were filtered
-              out in :meth:`filter_preds`). This means
-              the returned indices list is unique, e.g., goes from 
-              ``[0, 0, 0, 1, 1, 2, 3, 3]`` to ``[0, 1, 2, 3]``.
-            * "largest" - similar to 'best', except that this strategy
-              requires performing additional computation to find out the 
-              largest face based on the area of bounding boxes. Thus the 
-              length of the `idx` list (which is equal to the number of 
-              sets of landmarks) is the same as for 'best' strategy,
-              except not the first (best) faces (actually, their
-              landmarks) for each image but selected faces are returned.
-
-        Note:
-            Strategy "best" is most memory efficient, strategy "largest" 
-            is least time efficient. Strategy "all" is as fast as "best" 
-            but takes up more space.
+            self,
+            landms: torch.Tensor,
+            bboxes: torch.Tensor,
+            idx: list[int],
+    ) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
+        """
+        Filters landmarks and bounding boxes per image according to the strategy.
 
         Args:
-            landms: Landmarks batch of shape 
-                (``num_faces``, ``num_landm`` * 2).
-            bboxes: Bounding boxes batch of shape (``num_faces``, 4).
-            idx: Indices where each index maps to an image from
-                which some face prediction (landmarks and bounding box) 
-                was retrieved. For instance if the 2nd element of idx is 
-                1, that means that the 2nd element of ``landms`` and the
-                2nd element of ``bboxes`` correspond to the 1st image. 
-                This list is ascending, meaning the elements are
-                grouped and increase, for example, the list may look
-                like this: ``[0, 0, 1, 2, 3, 3, 3, 3, 4, 4, 5, 6, 6]``.
-
-        Raises:
-            ValueError: If the strategy is not supported.
+            landms: Tensor of shape (N, num_landm*2) with detected landmarks.
+            bboxes: Tensor of shape (N, 4) with bounding box coordinates.
+            idx: List of length N mapping each detection to its source image index.
 
         Returns:
-            A tuple where the first element is torch tensor of shape 
-            (``num_faces``, ``num_landm`` * 2) representing the selected 
-            sets of landmarks and the second element is a list of 
-            indices where each index maps a corresponding set of 
-            landmarks (face) to an image identified by that index.
+            A tuple of (selected_landms, selected_bboxes, selected_indices) where:
+              - selected_landms is a tensor of shape (M, num_landm*2),
+              - selected_bboxes is a tensor of shape (M, 4),
+              - selected_indices is a list of length M mapping each selected detection to its image.
         """
         if len(idx) == 0:
-            # If no predicted landmarks, return empty lists
-            return torch.tensor([], device=landms.device), []
-        
-        # Init helper variables
-        landmarks, indices = [], []
+            return (torch.tensor([], device=landms.device),
+                    torch.tensor([], device=bboxes.device),
+                    [])
+
+        selected_landms = []
+        selected_bboxes = []
+        selected_indices = []
         cache = {"idx": [], "bboxes": [], "landms": []}
 
         for i in range(len(idx)):
-            # Apend everything to cache
+            # Accumulate detections belonging to the same image
             cache["idx"].append(idx[i])
             cache["bboxes"].append(bboxes[i])
             cache["landms"].append(landms[i])
 
+            # If next detection is from the same image, keep accumulating
             if i != len(idx) - 1 and cache["idx"][-1] == idx[i + 1]:
-                # No operations until cache for current idx is full
                 continue
 
-            match self.strategy:
-                case "all":
-                    # Append all landmarks and indices
-                    landmarks.extend(cache["landms"])
-                    indices.extend(cache["idx"])
-                case "best":
-                    # Append the first set of landmarks
-                    landmarks.append(cache["landms"][0])
-                    indices.append(cache["idx"][0])
-                case "largest":
-                    # Compute bounding box areas
-                    bbs = torch.stack(cache["bboxes"])
-                    areas = (bbs[:, 2] - bbs[:, 0] + 1) *\
-                            (bbs[:, 3] - bbs[:, 1] + 1)
+            # Process accumulated detections for this image according to the strategy
+            if self.strategy == "all":
+                selected_landms.extend(cache["landms"])
+                selected_bboxes.extend(cache["bboxes"])
+                selected_indices.extend(cache["idx"])
+            elif self.strategy == "best":
+                # "Best": choose the first (already sorted) detection for the image.
+                selected_landms.append(cache["landms"][0])
+                selected_bboxes.append(cache["bboxes"][0])
+                selected_indices.append(cache["idx"][0])
+            elif self.strategy == "largest":
+                # "Largest": choose the detection with the largest bounding box area.
+                bbs_stack = torch.stack(cache["bboxes"])
+                areas = (bbs_stack[:, 2] - bbs_stack[:, 0] + 1) * (bbs_stack[:, 3] - bbs_stack[:, 1] + 1)
+                best_idx = torch.argmax(areas).item()
+                selected_landms.append(cache["landms"][best_idx])
+                selected_bboxes.append(cache["bboxes"][best_idx])
+                selected_indices.append(cache["idx"][0])
+            else:
+                raise ValueError(f"Unsupported strategy: {self.strategy}")
 
-                    # Append only the largest face landmarks and its idx
-                    landmarks.append(cache["landms"][areas.argmax()])
-                    indices.append(cache["idx"][0])
-                case _:
-                    raise ValueError(f"Unsupported startegy: {self.strategy}")
-            
-            # Clear cache (reinitialize empty lists)
-            cache = {k: [] for k in cache.keys()}
+            # Reset cache for the next image group.
+            cache = {"idx": [], "bboxes": [], "landms": []}
 
-        # Stack landmarks across batch dim
-        landmarks = torch.stack(landmarks)
-    
-        return landmarks, indices
-    
+        selected_landms = torch.stack(selected_landms)
+        selected_bboxes = torch.stack(selected_bboxes)
+        return selected_landms, selected_bboxes, selected_indices
+
     @torch.no_grad()
-    def predict(self, images: torch.Tensor) -> tuple[np.ndarray, list[int]]:
-        """Predict the sets of landmarks from the image batch.
-
-        This method takes a batch of images, detect all visible faces, 
-        predicts bounding boxes and landmarks for each face and then 
-        filters those faces according to a specific strategy - see
-        :meth:`take_by_strategy` for more info. Finally, it returns 
-        those selected sets of landmarks and corresponding indices that 
-        map each set to a specific image where the face was originally 
-        detected.
-
-        The predicted sets of landmarks are 5-point coordinates (they  
-        are specified from an observer's viewpoint, meaning that, for 
-        instance, left eye is the eye on the left hand-side of the image 
-        rather than the left eye from the person's to whom the eye 
-        belongs perspective):
-
-            1. **(x1, y1)** - coordinate of the left eye
-            2. **(x2, y2)** - coordinate of the right eye
-            3. **(x3, y3)** - coordinate of the nose tip
-            4. **(x4, y4)** - coordinate of the left mouth corner
-            5. **(x5, y5)** - coordinate of the right mouth corner
-
-        The coordinates are with respect to the sizes of the images 
-        (typically padded) provided as an input to this method.
-
-        Args:
-            images: Image batch of shape (N, 3, H, W) in RGB form with 
-                float values from 0.0 to 255.0. It must be on the same 
-                device as this model.
+    def predict(self, images: torch.Tensor) -> tuple[np.ndarray, list[int], np.ndarray]:
+        """
+        Predicts face landmarks and bounding boxes from a batch of images.
 
         Returns:
-            A tuple where the first element is a numpy array of shape 
-            (``num_faces``, 5, 2) representing the selected sets of 
-            landmark coordinates and the second element is a list of
-            corresponding indices mapping each face to an image it comes
-            from.
+            - landmarks: A NumPy array of shape (num_faces, 5, 2)
+            - indices: A list mapping each face detection to its source image index
+            - bboxes: A NumPy array of shape (num_faces, 4) with bounding box coordinates
         """
-        # Convert images to appropriate input and perform inference
-        x, offset = images[:, [2, 1, 0]], torch.tensor([104, 117, 123])
-        scores, bboxes, landms = self(x - offset.view(3, 1, 1).to(x.device))
+        # Preprocess: convert images from RGB to BGR order and subtract mean offset.
+        x, offset = images[:, [2, 1, 0]], torch.tensor([104, 117, 123], device=images.device)
+        x = x - offset.view(3, 1, 1)
+        scores, bboxes, landms = self(x)
 
-        # Create prior boxes and scale factors to decode bboxes & landms
+        # Create priors and compute scale factors.
         priors = PriorBox((x.size(2), x.size(3))).forward().to(x.device)
         scale_b = torch.tensor([x.size(3), x.size(2)] * 2, device=x.device)
         scale_l = torch.tensor([x.size(3), x.size(2)] * 5, device=x.device)
 
-        # Decode the predictions
+        # Decode raw predictions.
         scores = scores[..., 1]
         bboxes = self.decode_bboxes(bboxes, priors) * scale_b
         landms = self.decode_landms(landms, priors) * scale_l
 
-        # Filter out bad predictions, then filter by strategy
-        filtered = self.filter_preds(scores, bboxes, landms)
-        landmarks, indices = self.take_by_strategy(*filtered)
+        # Filter predictions.
+        filtered_landms, filtered_bboxes, sample_indices = self.filter_preds(scores, bboxes, landms)
 
-        # Stack landmarks across batch dim and reshape as coords
-        landmarks = landmarks.view(-1, 5, 2).cpu().numpy()
+        # Apply strategy to select the best detection per image.
+        selected_landms, selected_bboxes, selected_indices = self.take_by_strategy(
+            filtered_landms, filtered_bboxes, sample_indices
+        )
 
-        return landmarks, indices
+        # Reshape landmarks to (num_faces, 5, 2) and convert tensors to NumPy arrays.
+        selected_landms = selected_landms.view(-1, 5, 2).cpu().numpy()
+        selected_bboxes = selected_bboxes.cpu().numpy()
+
+        return selected_landms, selected_indices, selected_bboxes
+
+
