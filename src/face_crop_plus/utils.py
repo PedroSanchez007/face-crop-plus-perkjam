@@ -502,46 +502,35 @@ def scale_bbox(bbox, original_shape, resized_shape, padding):
     return scaled_x1, scaled_y1, scaled_x2, scaled_y2
 
 
-def extend_bbox(bbox, image_shape, expansion_ratio):
+def extend_bbox(bbox, image_shape, expansion_top, expansion_bottom, expansion_left, expansion_right):
     """
-    Extends a bounding box symmetrically by a specified expansion ratio.
-
-    The ideal extended box is computed so that each side is extended by
-    expansion_ratio times the original box dimension. Then the coordinates
-    are clamped to the image boundaries.
+    Extends a bounding box asymmetrically using separate expansion factors for each side.
 
     Args:
         bbox (tuple or list): The original bounding box (x1, y1, x2, y2).
         image_shape (tuple): The shape of the image as (height, width, ...).
-        expansion_ratio (float): The fraction by which to extend each side.
-            For example, expansion_ratio=1 means add one original box width (or height)
-            to each side.
+        expansion_top (float): Fraction of the bbox height to extend upward.
+        expansion_bottom (float): Fraction of the bbox height to extend downward.
+        expansion_left (float): Fraction of the bbox width to extend to the left.
+        expansion_right (float): Fraction of the bbox width to extend to the right.
 
     Returns:
-        tuple: Extended bounding box (new_x1, new_y1, new_x2, new_y2).
+        tuple: Extended bounding box (new_x1, new_y1, new_x2, new_y2), clamped to image boundaries.
     """
     x1, y1, x2, y2 = bbox
     width = x2 - x1
     height = y2 - y1
 
-    # Desired total dimensions after extension.
-    desired_width = width * (1 + 2 * expansion_ratio)
-    desired_height = height * (1 + 2 * expansion_ratio)
+    new_x1 = x1 - expansion_left * width
+    new_x2 = x2 + expansion_right * width
+    new_y1 = y1 - expansion_top * height
+    new_y2 = y2 + expansion_bottom * height
 
-    # Compute the center of the original box.
-    center_x = (x1 + x2) / 2
-    center_y = (y1 + y2) / 2
-
-    # Ideal (symmetric) extended coordinates.
-    ideal_x1 = center_x - desired_width / 2
-    ideal_x2 = center_x + desired_width / 2
-    ideal_y1 = center_y - desired_height / 2
-    ideal_y2 = center_y + desired_height / 2
-
-    # Clamp to image boundaries.
-    new_x1 = max(0, ideal_x1)
-    new_y1 = max(0, ideal_y1)
-    new_x2 = min(image_shape[1], ideal_x2)
-    new_y2 = min(image_shape[0], ideal_y2)
+    img_h, img_w = image_shape[:2]
+    new_x1 = max(0, new_x1)
+    new_y1 = max(0, new_y1)
+    new_x2 = min(img_w, new_x2)
+    new_y2 = min(img_h, new_y2)
 
     return (new_x1, new_y1, new_x2, new_y2)
+

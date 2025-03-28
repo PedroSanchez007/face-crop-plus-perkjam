@@ -155,7 +155,10 @@ class Cropper():
         num_processes: int = 1,
         device: str | torch.device = "cpu",
         crop_mode: str = "bbox",  # "aligned" or "bbox"
-        expansion_ratio: float = 0.2,
+        expansion_top: float = 0.5,
+        expansion_bottom: float = 0.2,
+        expansion_left: float = 0.3,
+        expansion_right: float = 0.3,
         **kwargs):
         """Initializes the cropper.
 
@@ -320,7 +323,10 @@ class Cropper():
         self.num_processes = num_processes
         self.device = device
         self.crop_mode = crop_mode
-        self.expansion_ratio = expansion_ratio
+        self.expansion_top = expansion_top
+        self.expansion_bottom = expansion_bottom
+        self.expansion_left = expansion_left
+        self.expansion_right = expansion_right
 
         # The only option for STD
         self.num_std_landmarks = 5
@@ -753,32 +759,37 @@ class Cropper():
     def crop_bbox_extended(self, images, indices, bboxes, paddings):
         """
         Crops faces from images using extended bounding boxes.
-        Here the detector's bounding box is in the coordinate system of the resized padded image.
-        We scale the bbox back to original coordinates using the corresponding padding.
+        The detector's bounding box (in the resized+padded coordinate system) is first scaled back to the original image
+        and then extended asymmetrically using the four expansion parameters.
 
         Args:
-            images (list[np.ndarray]): List of original images (in original dimensions).
+            images (list[np.ndarray]): List of original images.
             indices (list[int]): List mapping each detection to its corresponding image index.
             bboxes (np.ndarray): Array of shape (N, 4) with bounding boxes from the detector (in resized coordinates).
-            paddings (np.ndarray): Array of shape (N, 4) with padding applied to each image as [top, bottom, left, right].
+            paddings (np.ndarray): Array of shape (N, 4) with padding applied as [top, bottom, left, right].
 
         Returns:
             list[np.ndarray]: List of cropped face images.
         """
-        resized_shape = (self.resize_size[1], self.resize_size[0])  # (height, width), e.g., (1024,1024)
+        # The resized shape is taken from self.resize_size. Note: we treat it as (height, width)
+        resized_shape = (self.resize_size[1], self.resize_size[0])  # e.g., (1024, 1024)
         cropped_faces = []
         for i, img_idx in enumerate(indices):
             print(f"Image {img_idx} original size:", images[img_idx].shape[:2])
             bbox_resized = bboxes[i]
-            # Get padding for this image from the paddings array.
-            pad_vals = paddings[img_idx]  # Should be in order: [top, bottom, left, right]
-            # Scale the detector's bounding box to original coordinates using the padding.
+            pad_vals = paddings[img_idx]  # [top, bottom, left, right]
+            # Scale the detector's bbox from the resized (padded) coordinate system back to original image.
             bbox_original = scale_bbox(bbox_resized, images[img_idx].shape, resized_shape, pad_vals)
             print(f"Scaled bounding box for detection {i}:", tuple(float(x) for x in bbox_original))
-            # Extend the scaled bounding box.
-            ext_bbox = extend_bbox(bbox_original, images[img_idx].shape, self.expansion_ratio)
+            # Extend the bounding box asymmetrically using the custom extension function.
+            ext_bbox = extend_bbox(
+                bbox_original,
+                images[img_idx].shape,
+                self.expansion_top,
+                self.expansion_bottom,
+                self.expansion_left,
+                self.expansion_right)
             print(f"Extended bounding box for detection {i}:", tuple(float(x) for x in ext_bbox))
-            # Crop the face region using the extended bounding box.
             cropped_face = images[img_idx][int(ext_bbox[1]):int(ext_bbox[3]), int(ext_bbox[0]):int(ext_bbox[2])]
             cropped_faces.append(cropped_face)
         return cropped_faces

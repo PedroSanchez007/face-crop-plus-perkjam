@@ -6,7 +6,7 @@ import torch
 from face_crop_plus.models import RetinaFace
 from face_crop_plus.utils import extend_bbox, scale_bbox
 
-def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
+def show_extended_bbox_from_detector(image, expansion_top, expansion_bottom, expansion_left, expansion_right):
     """
     Uses the detector to compute the face bounding box, scales it from the resized (padded) coordinate
     system back to the original image dimensions, extends it, prints debug info, and draws it on the image.
@@ -50,7 +50,7 @@ def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
     print("Scaled bounding box (original coordinates):", tuple(float(x) for x in bbox_original))
 
     # Extend the scaled bounding box.
-    extended_bbox = extend_bbox(bbox_original, image.shape, expansion_ratio)
+    extended_bbox = extend_bbox(bbox_original, image.shape, expansion_top, expansion_bottom, expansion_left, expansion_right)
     print("Extended bounding box coordinates:", tuple(float(x) for x in extended_bbox))
 
     # Draw the extended bounding box on a copy of the original image.
@@ -64,12 +64,12 @@ def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
     return image_with_box
 
 if __name__ == "__main__":
-    image_path = "C:/source/repos/face-crop-plus-perkjam/demo/input_images/000002.jpg"
+    image_path = "C:/source/repos/face-crop-plus-perkjam/demo/input_images/000001.jpg"
     image = cv2.imread(image_path)
     if image is None:
         raise ValueError("Could not load the test image.")
 
-    result_image = show_extended_bbox_from_detector(image, expansion_ratio=0.2)
+    result_image = show_extended_bbox_from_detector(image, expansion_top=0.5, expansion_bottom=0.2, expansion_left=0.3, expansion_right=0.3)
     cv2.imshow("Extended Detector Bounding Box", result_image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
