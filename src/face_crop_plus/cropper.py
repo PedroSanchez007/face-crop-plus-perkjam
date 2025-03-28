@@ -154,11 +154,12 @@ class Cropper():
         batch_size: int = 8,
         num_processes: int = 1,
         device: str | torch.device = "cpu",
-        crop_mode: str = "bbox",  # "aligned" or "bbox"
+        crop_mode: str = "align",
         expansion_top: float = 0.5,
         expansion_bottom: float = 0.2,
         expansion_left: float = 0.3,
         expansion_right: float = 0.3,
+        apply_rotation: bool = True,
         **kwargs):
         """Initializes the cropper.
 
@@ -327,6 +328,7 @@ class Cropper():
         self.expansion_bottom = expansion_bottom
         self.expansion_left = expansion_left
         self.expansion_right = expansion_right
+        self.apply_rotation = apply_rotation
 
         # The only option for STD
         self.num_std_landmarks = 5

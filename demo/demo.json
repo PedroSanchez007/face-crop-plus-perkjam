@@ -15,5 +15,11 @@
     "enh_threshold": null,
     "batch_size": 8,
     "num_processes": 1,
-    "device": "cpu"
+    "device": "cpu",
+    "crop_mode": "aligned",
+    "expansion_top": 0.5,
+    "expansion_bottom": 0.2,
+    "expansion_left": 0.3,
+    "expansion_right": 0.3,
+    "apply_rotation": true
 }

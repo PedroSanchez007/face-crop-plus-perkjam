@@ -534,3 +534,41 @@ def extend_bbox(bbox, image_shape, expansion_top, expansion_bottom, expansion_le
 
     return (new_x1, new_y1, new_x2, new_y2)
 
+
+def has_black_borders(image, border_fraction=0.1, threshold=10):
+    """
+    Checks if the border regions of the image contain a significant number of black pixels.
+
+    Args:
+        image (np.ndarray): The cropped image.
+        border_fraction (float): Fraction of image dimensions to consider as border.
+        threshold (int): Pixel intensity threshold (0-255) below which a pixel is considered black.
+
+    Returns:
+        bool: True if a significant portion of border pixels are black.
+    """
+    h, w = image.shape[:2]
+    border_h = int(h * border_fraction)
+    border_w = int(w * border_fraction)
+
+    # Extract border regions: top, bottom, left, right
+    top = image[:border_h, :]
+    bottom = image[-border_h:, :]
+    left = image[:, :border_w]
+    right = image[:, -border_w:]
+
+    # Count black pixels in each border region.
+    total_pixels = (top.size + bottom.size + left.size + right.size) / image.shape[
+        2]  # number of pixels (ignoring channels)
+    black_pixels = (
+                           np.sum(top < threshold) +
+                           np.sum(bottom < threshold) +
+                           np.sum(left < threshold) +
+                           np.sum(right < threshold)
+                   ) / image.shape[2]
+
+    black_ratio = black_pixels / total_pixels
+    # If more than, say, 10% of the border pixels are black, return True.
+    return black_ratio > 0.1
+
+
