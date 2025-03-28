@@ -2,14 +2,14 @@
 import numpy as np
 import torch
 
-# Import your detector class and helper functions.
+# Import your detector and helper functions.
 from face_crop_plus.models import RetinaFace
 from face_crop_plus.utils import extend_bbox, scale_bbox
 
 def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
     """
-    Uses the detector to compute the face bounding box, scales it back to the original
-    image dimensions, extends it, prints debug information, and draws the extended box on the image.
+    Uses the detector to compute the face bounding box, scales it from the resized (padded) coordinate
+    system back to the original image dimensions, extends it, prints debug info, and draws it on the image.
 
     Args:
         image (np.ndarray): Original image in BGR format.
@@ -20,41 +20,38 @@ def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
     """
     # Define the resized shape used by the detector.
     resized_shape = (1024, 1024)
+    # For this test, assume no padding was applied:
+    padding = (0, 0, 0, 0)
 
-    # Initialize the detector (using strategy "best" as per your config).
+    # Initialize the detector.
     device = torch.device("cpu")
     detector = RetinaFace(strategy="best", vis=0.6)
     detector.load(device)
 
-    # Convert image from BGR to RGB since the detector expects RGB.
+    # Convert image from BGR to RGB.
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    # Create a torch tensor of shape (1, 3, H, W) from the resized image.
-    # Here, we assume the detector resizes the image internally to 1024x1024.
-    # In many pipelines, the image is resized to a common size for batching.
-    image_tensor = torch.from_numpy(cv2.resize(image_rgb, resized_shape)).permute(2, 0, 1).unsqueeze(0).float()
+    # Resize the image to 1024x1024 (without padding) for this test.
+    resized_image_rgb = cv2.resize(image_rgb, resized_shape)
+    image_tensor = torch.from_numpy(resized_image_rgb).permute(2, 0, 1).unsqueeze(0).float()
 
     # Call the detector's predict function.
     landmarks, indices, bboxes = detector.predict(image_tensor)
-
-    # If no faces were detected, return the original image.
     if bboxes.size == 0 or len(bboxes) == 0:
         print("No faces detected.")
         return image.copy()
 
-    # For strategy "best", assume one face is returned.
-    bbox_resized = bboxes[0]  # Bounding box in the resized coordinate system
-
-    # Print the original image size (in case it differs from the resized shape).
+    # Assume one face is returned.
+    bbox_resized = bboxes[0]
     print("Original image size (height, width):", image.shape[:2])
-    print("Detector bounding box (resized coordinates):", bbox_resized)
+    print("Detector bounding box (resized coordinates):", tuple(float(x) for x in bbox_resized))
 
-    # Scale the bounding box from resized (1024x1024) back to the original dimensions.
-    bbox_original = scale_bbox(bbox_resized, image.shape, resized_shape)
-    print("Scaled bounding box (original coordinates):", bbox_original)
+    # Scale the bounding box to original coordinates.
+    bbox_original = scale_bbox(bbox_resized, image.shape, resized_shape, padding)
+    print("Scaled bounding box (original coordinates):", tuple(float(x) for x in bbox_original))
 
     # Extend the scaled bounding box.
     extended_bbox = extend_bbox(bbox_original, image.shape, expansion_ratio)
-    print("Extended bounding box coordinates:", extended_bbox)
+    print("Extended bounding box coordinates:", tuple(float(x) for x in extended_bbox))
 
     # Draw the extended bounding box on a copy of the original image.
     image_with_box = image.copy()
@@ -62,15 +59,12 @@ def show_extended_bbox_from_detector(image, expansion_ratio=0.2):
         image_with_box,
         (int(extended_bbox[0]), int(extended_bbox[1])),
         (int(extended_bbox[2]), int(extended_bbox[3])),
-        (0, 0, 255),  # Red color for the extended box.
-        2
+        (0, 0, 255), 2
     )
-
     return image_with_box
 
 if __name__ == "__main__":
-    # Replace with your test image path.
-    image_path = "C:/source/repos/face-crop-plus-perkjam/demo/input_images/000001.jpg"
+    image_path = "C:/source/repos/face-crop-plus-perkjam/demo/input_images/000002.jpg"
     image = cv2.imread(image_path)
     if image is None:
         raise ValueError("Could not load the test image.")

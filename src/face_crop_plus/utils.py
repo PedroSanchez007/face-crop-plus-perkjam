@@ -457,56 +457,91 @@ def clean_names(
             tgt = os.path.join(input_dir, name + ext)
             os.rename(src, tgt)
 
-def scale_bbox(bbox, original_shape, resized_shape):
+def scale_bbox(bbox, original_shape, resized_shape, padding):
     """
-    Scales the bounding box coordinates from the resized image coordinate system
-    back to the original image dimensions.
+    Scales a bounding box from the padded resized image coordinate system
+    back to the original image coordinate system.
+
+    The detector outputs coordinates relative to a padded image of size resized_shape.
+    The effective area is the resized image minus the padding.
+    This function subtracts the padding offsets, scales the coordinates,
+    and returns them in the original image's coordinate system.
 
     Args:
-        bbox (tuple or list): The bounding box (x1, y1, x2, y2) from the resized image.
+        bbox (tuple or list): Bounding box (x1, y1, x2, y2) from the detector.
         original_shape (tuple): Original image shape as (height, width, ...).
         resized_shape (tuple): Resized image shape as (height, width).
+        padding (list or tuple): Padding as [pad_top, pad_bottom, pad_left, pad_right] applied to create the resized image.
 
     Returns:
-        tuple: Scaled bounding box (x1, y1, x2, y2) in the original image coordinate system.
+        tuple: Scaled bounding box (x1, y1, x2, y2) in the original image coordinates.
     """
     orig_h, orig_w = original_shape[:2]
     resized_h, resized_w = resized_shape[:2]
-    scale_x = orig_w / resized_w
-    scale_y = orig_h / resized_h
-    return (
-        bbox[0] * scale_x,
-        bbox[1] * scale_y,
-        bbox[2] * scale_x,
-        bbox[3] * scale_y,
-    )
+    pad_top, pad_bottom, pad_left, pad_right = padding
+
+    # Effective region dimensions in the resized image:
+    effective_w = resized_w - (pad_left + pad_right)
+    effective_h = resized_h - (pad_top + pad_bottom)
+
+    # Adjust the bbox coordinates relative to the effective (unpadded) area:
+    adj_x1 = bbox[0] - pad_left
+    adj_y1 = bbox[1] - pad_top
+    adj_x2 = bbox[2] - pad_left
+    adj_y2 = bbox[3] - pad_top
+
+    # Compute scale factors from effective region to original image.
+    scale_x = orig_w / effective_w
+    scale_y = orig_h / effective_h
+
+    scaled_x1 = adj_x1 * scale_x
+    scaled_y1 = adj_y1 * scale_y
+    scaled_x2 = adj_x2 * scale_x
+    scaled_y2 = adj_y2 * scale_y
+
+    return scaled_x1, scaled_y1, scaled_x2, scaled_y2
+
 
 def extend_bbox(bbox, image_shape, expansion_ratio):
     """
-    Extends a bounding box outward by a given percentage,
-    stopping at the image boundaries.
+    Extends a bounding box symmetrically by a specified expansion ratio.
+
+    The ideal extended box is computed so that each side is extended by
+    expansion_ratio times the original box dimension. Then the coordinates
+    are clamped to the image boundaries.
 
     Args:
         bbox (tuple or list): The original bounding box (x1, y1, x2, y2).
         image_shape (tuple): The shape of the image as (height, width, ...).
-        expansion_ratio (float): Fraction to extend each side (e.g., 0.2 for 20% expansion).
+        expansion_ratio (float): The fraction by which to extend each side.
+            For example, expansion_ratio=1 means add one original box width (or height)
+            to each side.
 
     Returns:
-        tuple: Extended bounding box (new_x1, new_y1, new_x2, new_y2), clipped to image boundaries.
+        tuple: Extended bounding box (new_x1, new_y1, new_x2, new_y2).
     """
     x1, y1, x2, y2 = bbox
     width = x2 - x1
     height = y2 - y1
 
-    # Calculate expansion amounts.
-    delta_x = expansion_ratio * width
-    delta_y = expansion_ratio * height
+    # Desired total dimensions after extension.
+    desired_width = width * (1 + 2 * expansion_ratio)
+    desired_height = height * (1 + 2 * expansion_ratio)
 
-    # Compute new coordinates, ensuring they stay within image bounds.
-    new_x1 = int(max(0, x1 - delta_x))
-    new_y1 = int(max(0, y1 - delta_y))
-    image_height, image_width = image_shape[:2]
-    new_x2 = int(min(image_width, x2 + delta_x))
-    new_y2 = int(min(image_height, y2 + delta_y))
+    # Compute the center of the original box.
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
 
-    return new_x1, new_y1, new_x2, new_y2
+    # Ideal (symmetric) extended coordinates.
+    ideal_x1 = center_x - desired_width / 2
+    ideal_x2 = center_x + desired_width / 2
+    ideal_y1 = center_y - desired_height / 2
+    ideal_y2 = center_y + desired_height / 2
+
+    # Clamp to image boundaries.
+    new_x1 = max(0, ideal_x1)
+    new_y1 = max(0, ideal_y1)
+    new_x2 = min(image_shape[1], ideal_x2)
+    new_y2 = min(image_shape[0], ideal_y2)
+
+    return (new_x1, new_y1, new_x2, new_y2)

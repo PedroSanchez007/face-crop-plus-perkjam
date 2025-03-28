@@ -155,7 +155,7 @@ class Cropper():
         num_processes: int = 1,
         device: str | torch.device = "cpu",
         crop_mode: str = "bbox",  # "aligned" or "bbox"
-        expansion_ratio: float = 1,
+        expansion_ratio: float = 0.2,
         **kwargs):
         """Initializes the cropper.
 
@@ -750,37 +750,36 @@ class Cropper():
                     masks = masks[[mask_indices.index(i) for i in group_idx]]
                     self.save_group(masks, file_name_group, group_dir)
 
-    def crop_bbox_extended(self, images, indices, bboxes):
+    def crop_bbox_extended(self, images, indices, bboxes, paddings):
         """
         Crops faces from images using extended bounding boxes.
+        Here the detector's bounding box is in the coordinate system of the resized padded image.
+        We scale the bbox back to original coordinates using the corresponding padding.
 
         Args:
-            images (list[np.ndarray]): List of original images in their original dimensions.
+            images (list[np.ndarray]): List of original images (in original dimensions).
             indices (list[int]): List mapping each detection to its corresponding image index.
-            bboxes (np.ndarray): Array of shape (N, 4) with bounding boxes in the resized coordinate system (e.g., 1024x1024).
+            bboxes (np.ndarray): Array of shape (N, 4) with bounding boxes from the detector (in resized coordinates).
+            paddings (np.ndarray): Array of shape (N, 4) with padding applied to each image as [top, bottom, left, right].
 
         Returns:
             list[np.ndarray]: List of cropped face images.
         """
-        # Define the resized shape used for detection.
-        resized_shape = (1024, 1024)
-
+        resized_shape = (self.resize_size[1], self.resize_size[0])  # (height, width), e.g., (1024,1024)
         cropped_faces = []
         for i, img_idx in enumerate(indices):
-            # Print debugging info.
             print(f"Image {img_idx} original size:", images[img_idx].shape[:2])
-
-            # Scale the detector's bounding box back to original image coordinates.
             bbox_resized = bboxes[i]
-            bbox_original = scale_bbox(bbox_resized, images[img_idx].shape, resized_shape)
-            print(f"Scaled bounding box for detection {i}: {tuple(float(x) for x in bbox_original)}")
-
+            # Get padding for this image from the paddings array.
+            pad_vals = paddings[img_idx]  # Should be in order: [top, bottom, left, right]
+            # Scale the detector's bounding box to original coordinates using the padding.
+            bbox_original = scale_bbox(bbox_resized, images[img_idx].shape, resized_shape, pad_vals)
+            print(f"Scaled bounding box for detection {i}:", tuple(float(x) for x in bbox_original))
             # Extend the scaled bounding box.
             ext_bbox = extend_bbox(bbox_original, images[img_idx].shape, self.expansion_ratio)
-            print(f"Extended bounding box for detection {i}: {tuple(float(x) for x in ext_bbox)}")
-
-            # Crop the image using the extended bounding box.
-            cropped_face = images[img_idx][ext_bbox[1]:ext_bbox[3], ext_bbox[0]:ext_bbox[2]]
+            print(f"Extended bounding box for detection {i}:", tuple(float(x) for x in ext_bbox))
+            # Crop the face region using the extended bounding box.
+            cropped_face = images[img_idx][int(ext_bbox[1]):int(ext_bbox[3]), int(ext_bbox[0]):int(ext_bbox[2])]
             cropped_faces.append(cropped_face)
         return cropped_faces
 
@@ -788,25 +787,20 @@ class Cropper():
         """
         Processes a batch of images.
         """
-        # Read images from the input directory.
         images, file_names = read_images(file_names, input_dir)
-
-        # Resize images for detection.
-        images_batch, _, paddings = as_batch(images, self.resize_size)  # resized to self.resize_size (e.g., 1024x1024)
+        images_batch, _, paddings = as_batch(images, self.resize_size)
         images_batch = as_tensor(images_batch, self.device)
 
-        # Call the detector's predict function.
+        # Get detector predictions.
         landmarks, indices, bboxes = self.det_model.predict(images_batch)
 
         if landmarks is not None and len(landmarks) == 0:
             return
 
         if self.crop_mode == "bbox":
-            # Use the extended bounding box cropping flow.
-            cropped_faces = self.crop_bbox_extended(as_numpy(images), indices, bboxes)
+            cropped_faces = self.crop_bbox_extended(as_numpy(images), indices, bboxes, paddings)
             self.save_group(cropped_faces, file_names[indices], output_dir)
         else:
-            # Use the existing landmark alignment flow.
             cropped_faces = self.crop_align(as_numpy(images), paddings, indices, landmarks)
             self.save_group(cropped_faces, file_names[indices], output_dir)
 
