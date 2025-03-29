@@ -154,7 +154,7 @@ class Cropper():
         batch_size: int = 8,
         num_processes: int = 1,
         device: str | torch.device = "cpu",
-        crop_mode: str = "align",
+        crop_mode: str = "aligned",
         expansion_top: float = 0.5,
         expansion_bottom: float = 0.2,
         expansion_left: float = 0.3,
@@ -804,9 +804,8 @@ class Cropper():
         images_batch, _, paddings = as_batch(images, self.resize_size)
         images_batch = as_tensor(images_batch, self.device)
 
-        # Get detector predictions.
+        # Get detector predictions from padded images.
         landmarks, indices, bboxes = self.det_model.predict(images_batch)
-
         if landmarks is not None and len(landmarks) == 0:
             return
 
@@ -814,7 +813,8 @@ class Cropper():
             cropped_faces = self.crop_bbox_extended(as_numpy(images), indices, bboxes, paddings)
             self.save_group(cropped_faces, file_names[indices], output_dir)
         else:
-            cropped_faces = self.crop_align(as_numpy(images), paddings, indices, landmarks)
+            # Use padded images for rotation-based cropping
+            cropped_faces = self.crop_align(as_numpy(images_batch), paddings, indices, landmarks)
             self.save_group(cropped_faces, file_names[indices], output_dir)
 
     def process_dir(
