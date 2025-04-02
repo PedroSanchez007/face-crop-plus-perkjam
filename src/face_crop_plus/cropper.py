@@ -449,119 +449,45 @@ class Cropper():
         # Pass STD landmarks as target landms
         self.landmarks_target = std_landmarks
 
-    def crop_align(
-        self,
-        images: np.ndarray | list[np.ndarray],
-        padding: np.ndarray | None,
-        indices: list[int],
-        landmarks_source: np.ndarray,
-    ) -> np.ndarray:
-        """Aligns and center-crops faces based on the given landmarks.
-
-        This method takes a batch of images (can be padded), and loops 
-        through each image (represented as a numpy array) performing the 
-        following actions:
-
-            1. Removes the padding.
-            2. Estimates affine transformation from source landmarks to 
-               standard landmarks.
-            3. Applies transformation to align and center-crop the face 
-               based on the face factor.
-            4. Returns a batch of face images represented as numpy 
-               arrays of the same length ans the number of sets of 
-               landmarks.
-
-        Crucial role in this method plays ``self.landmarks_target`` 
-        which is the standard set of landmarks used as a reference for 
-        the source landmarks. Target and source landmark sets are used 
-        to estimate transformations of images - each image to which a 
-        set of landmarks (from source landmarks batch) belongs is 
-        transformed such that the area covers the those landmarks as the 
-        standard  (target) landmarks set (as ideally as possible). For 
-        more details about target landmarks, check 
-        :meth:`_init_landmarks_target`.
-
-        Note:
-            If ``self.allow_skew`` is set to True, then facial points 
-            will also be skewed to match ``self.landmarks_target`` as 
-            close as possible (resulting in, e.g., longer/flatter faces 
-            than in the original images).
+    def align_face(self, images: np.ndarray | list[np.ndarray], indices: list[int],
+                   landmarks_source: np.ndarray) -> np.ndarray:
+        """
+        Applies an affine transformation (rotation) to each unpadded image based on the detected landmarks.
 
         Args:
-            images: Image batch of shape (N, H, W, 3) of type 
-                :attr:`numpy.uint8` (doesn't matter if RGB or BGR) where 
-                each nth image is transformed to extract face(-s). 
-                (H, W) should be ``self.resize_size``. It can also be a 
-                list of :attr:`numpy.uint8` numpy arrays of different 
-                shapes.
-            padding: Padding of shape (N, 4) where the integer values 
-                correspond to the number of pixels padded from each 
-                side: top, bottom, left, right. Padding was originally 
-                applied to each image, e.g., to make the image square, 
-                so that all images could be stacked as a batch. 
-                Therefore, it is needed here to remove the padding. If 
-                specified as None, it is assumed that the images are 
-                un-padded.
-            indices: Indices list of length num_faces where each index 
-                specifies which image is used to extract faces for each 
-                set of landmarks in ``landmarks_source``.
-            landmarks_source: Landmarks batch of shape 
-                (num_faces, ``self.num_std_landmarks``, 2). These are 
-                landmark sets of all the desired faces to extract from 
-                the given batch of N images.
+            images: A batch (or list) of unpadded images (each should be the original image resized without padding).
+            indices: A list mapping each detected face (landmarks set) to its corresponding image index.
+            landmarks_source: A NumPy array of shape (num_faces, self.num_std_landmarks, 2) with the detected landmarks,
+                              adjusted to the unpadded image coordinate system.
 
         Returns:
-            A batch of aligned and center-cropped faces where the factor 
-            of the area of a face relative to the whole face image area
-            is ``self.face_factor``. The output is a numpy array of 
-            shape (N, H, W) of type :attr:`numpy.uint8` (same channel 
-            structure as for the input images). (H, W) is defined by 
-            ``self.output_size``.
+            A NumPy array of rotated (aligned) images with dimensions given by self.output_size.
         """
-        # Init list, border mode
         transformed_images = []
         border_mode = getattr(cv2, f"BORDER_{self.padding.upper()}")
-        
-        for landmarks_idx, image_idx in enumerate(indices):
+
+        for j, image_idx in enumerate(indices):
             if self.allow_skew:
-                # Perform full perspective transformation
                 transform_function = cv2.estimateAffine2D
             else:
-                # Preform only rotation, scaling and translation
                 transform_function = cv2.estimateAffinePartial2D
-            
-            # Estimate transformation matrix to apply
-            transform_matrix = transform_function(
-                landmarks_source[landmarks_idx],
+
+            result = transform_function(
+                landmarks_source[j],
                 self.landmarks_target,
                 ransacReprojThreshold=np.inf,
-            )[0]
-
+            )
+            transform_matrix = result[0] if result is not None else None
             if transform_matrix is None:
-                # Could not estimate
+                print(f"Warning: Unable to compute transform for image {image_idx}.")
                 continue
 
-            # Retrieve current image
             image = images[image_idx]
+            rotated = cv2.warpAffine(image, transform_matrix, self.output_size, borderMode=border_mode)
+            transformed_images.append(rotated)
 
-            if padding is not None:
-                # Crop out the un-padded area
-                [t, b, l, r] = padding[image_idx]
-                image = image[t:image.shape[0]-b, l:image.shape[1]-r]
+        return np.stack(transformed_images) if transformed_images else np.array([])
 
-            # Apply affine transformation to the image
-            transformed_images.append(cv2.warpAffine(
-                image,
-                transform_matrix,
-                self.output_size,
-                borderMode=border_mode
-            ))
-        
-        # Normally stacking would be applied unless the list is empty
-        numpy_fn = np.stack if len(transformed_images) > 0 else np.array
-        
-        return numpy_fn(transformed_images)
-    
     def save_group(
         self,
         faces: np.ndarray,
@@ -815,24 +741,73 @@ class Cropper():
             cropped_faces = self.crop_align(as_numpy(images_batch), paddings, indices, landmarks)
             self.save_group(cropped_faces, file_names[indices], output_dir)
 
-    def process_dir(self, input_dir: str, output_dir: str | None = None, desc: str | None = "Processing",
-                    process_fn=None):
+    def process_batch_aligned_output(self, file_names: list[str], input_dir: str, output_dir: str):
+        """
+        Processes a batch of images and outputs the rotated (aligned) images after removing padding.
+
+        Steps:
+          1. Read the original images.
+          2. Generate padded images using as_batch.
+          3. Run the detector on the padded images to obtain landmarks.
+          4. Remove padding from the padded images, and adjust the detected landmark coordinates
+             by subtracting the top/left padding.
+          5. Apply the affine transformation (rotation) on the unpadded images via align_face.
+          6. Save the rotated images for inspection.
+        """
+        # Step 1: Read original images.
+        images, file_names = read_images(file_names, input_dir)
+
+        # Step 2: Generate padded images (e.g., 1024x1024) using as_batch.
+        padded_images, unscales, paddings = as_batch(images, self.resize_size)
+        padded_images = as_numpy(padded_images)
+
+        # Step 3: Run the detector on the padded images.
+        images_tensor = as_tensor(padded_images, self.device)
+        landmarks, indices, bboxes = self.det_model.predict(images_tensor)
+        if landmarks is None or len(landmarks) == 0:
+            print("No faces detected.")
+            return
+
+        # Step 4: Remove padding from each padded image.
+        unpadded_images = []
+        for i, img in enumerate(padded_images):
+            if paddings is not None:
+                t, b, l, r = paddings[i]
+                unpadded = img[t:img.shape[0] - b, l:img.shape[1] - r]
+            else:
+                unpadded = img
+            unpadded_images.append(unpadded)
+
+        # Step 5: Adjust landmark coordinates by subtracting the padding offsets.
+        adjusted_landmarks = []
+        for j, img_idx in enumerate(indices):
+            if paddings is not None:
+                t, b, l, r = paddings[img_idx]
+            else:
+                t, l = 0, 0
+            # Subtract the (left, top) offset from the landmarks.
+            adjusted = landmarks[j] - np.array([l, t])
+            adjusted_landmarks.append(adjusted)
+        adjusted_landmarks = np.array(adjusted_landmarks)
+
+        # Step 6: Apply the affine transformation (rotation) using align_face.
+        rotated_images = self.align_face(unpadded_images, indices, adjusted_landmarks)
+
+        # Step 7: Save the rotated images.
+        self.save_group(rotated_images, file_names[indices], output_dir)
+
+    def process_dir(self, input_dir: str, output_dir: str | None = None, desc: str | None = "Processing"):
         """
         Processes images in the specified input directory.
 
-        Splits the image file names into batches and processes each batch on multiple cores.
-        You can pass in the processing function to be used via the process_fn parameter.
-        If output_dir is not specified, it will be automatically set to:
-             input_dir + "_" + self.crop_mode + "_faces"
-        so that the output folder reflects the current crop_mode.
+        Splits the file names into batches and processes each batch on multiple cores.
+        The processing function is chosen internally based on self.crop_mode:
+           - If crop_mode is "aligned", then process_batch_aligned_output is used.
+           - Otherwise (e.g., "bbox"), process_batch is used.
 
-        Args:
-            input_dir (str): Path to input directory with image files.
-            output_dir (str | None): Path to output directory for saving face images. If None, it is
-                                     generated based on the input_dir and crop_mode.
-            desc (str | None): Description for the progress bar.
-            process_fn (callable | None): Function to process a batch of images.
-                                          If None, defaults to self.process_batch.
+        If output_dir is not specified, it will be set to:
+             input_dir + "_" + self.crop_mode + "_faces"
+        so that the output folder reflects the crop_mode.
         """
         if output_dir is None:
             output_dir = input_dir + "_" + self.crop_mode + "_faces"
@@ -845,17 +820,22 @@ class Cropper():
 
         from multiprocessing.pool import ThreadPool
         import tqdm
+        from functools import partial
 
-        # If no processing function is provided, use the default.
-        if process_fn is None:
+        # Choose the processing function based on crop_mode.
+        if self.crop_mode == "aligned":
+            print("Using aligned (rotated) processing approach.")
+            process_fn = self.process_batch_aligned_output
+        else:
+            print("Using bounding box (non-rotated) processing approach.")
             process_fn = self.process_batch
 
-        # Use partial to set input_dir and output_dir for each batch.
+        # Process batches in parallel.
         worker = partial(process_fn, input_dir=input_dir, output_dir=output_dir)
-
         with ThreadPool(self.num_processes, self._init_models) as pool:
             imap = pool.imap_unordered(worker, file_batches)
             if desc is not None:
                 imap = tqdm.tqdm(imap, total=len(file_batches), desc=desc)
             list(imap)
+
 
