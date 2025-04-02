@@ -8,6 +8,8 @@ from functools import partial
 from collections import defaultdict
 from multiprocessing.pool import ThreadPool
 
+from sympy.sets.fancysets import normalize_theta_set
+
 from .models import BiSeNet
 from .models import RRDBNet
 from .models import RetinaFace
@@ -761,16 +763,16 @@ class Cropper():
           8. Saving the final cropped face images.
         """
         # Step 1: Read original images.
-        images, file_names = read_images(file_names, input_dir)
+        original_images, file_names = read_images(file_names, input_dir)
 
         # Step 2: Generate padded images (e.g., 1024x1024) using as_batch.
-        padded_images, unscales, paddings = as_batch(images, self.resize_size)
-        padded_images = as_numpy(padded_images)
+        padded_original_images, original_unscales, original_paddings = as_batch(original_images, self.resize_size)
+        padded_original_images = as_numpy(padded_original_images)
 
         # Step 3: Run detector on padded images.
-        images_tensor = as_tensor(padded_images, self.device)
-        landmarks, indices, _ = self.det_model.predict(images_tensor)
-        if landmarks is None or len(landmarks) == 0:
+        images_tensor = as_tensor(padded_original_images, self.device)
+        padded_original_landmarks, padded_original_indices, _ = self.det_model.predict(images_tensor)
+        if padded_original_landmarks is None or len(padded_original_landmarks) == 0:
             print("No faces detected.")
             return
 
@@ -779,52 +781,42 @@ class Cropper():
 
         # Step 4: For each detection, adjust landmarks from padded to original coordinates.
         adjusted_landmarks = []
-        for j, img_idx in enumerate(indices):
+        for j, img_idx in enumerate(padded_original_indices):
             # Get the padding values for this image.
-            if paddings is not None:
-                pad_vals = paddings[img_idx]  # (top, bottom, left, right)
+            if original_paddings is not None:
+                pad_vals = original_paddings[img_idx]  # (top, bottom, left, right)
             else:
                 pad_vals = (0, 0, 0, 0)
-            orig_shape = images[img_idx].shape[:2]  # (height, width)
-            adjusted = Cropper.adjust_landmarks_to_original(landmarks[j], orig_shape, padded_shape, pad_vals)
+            orig_shape = original_images[img_idx].shape[:2]  # (height, width)
+            adjusted = Cropper.adjust_landmarks_to_original(padded_original_landmarks[j], orig_shape, padded_shape, pad_vals)
             adjusted_landmarks.append(adjusted)
         adjusted_landmarks = np.array(adjusted_landmarks)
 
         # Step 5: For each detection, use the original image and the adjusted landmarks to align (rotate) the image.
         aligned_images = []
-        for k, img_idx in enumerate(indices):
+        for k, img_idx in enumerate(padded_original_indices):
             # Use the original image here.
-            aligned = self.align_face(images[img_idx], adjusted_landmarks[k])
-            # Optionally, center crop back to 1024x1024.
-            aligned_cropped = Cropper.center_crop(aligned, target_size=(1024, 1024))
-            aligned_images.append(aligned_cropped)
+            aligned_image = self.align_face(original_images[img_idx], adjusted_landmarks[k])
+            cropped_aligned_image = Cropper.crop_empty_borders(aligned_image, threshold=10)
+            aligned_images.append(cropped_aligned_image)
 
-        # Step 6: Re-detect landmarks on each aligned image individually.
-        new_landmarks_list = []
-        new_indices_list = []
-        for i, aligned in enumerate(aligned_images):
-            aligned_batch = np.expand_dims(aligned, axis=0)
-            aligned_tensor = as_tensor(aligned_batch, self.device)
-            lm, ind, _ = self.det_model.predict(aligned_tensor)
-            if lm is not None and len(lm) > 0:
-                new_landmarks_list.append(lm[0])
-                new_indices_list.append(i)
-            else:
-                print(f"No landmarks detected on aligned image {i}.")
+        # Step 5b: Scale and pad the images to 1024x1024 for detection
+        padded_rotated_images, padded_rotated_unscales, padded_rotated_paddings = as_batch(aligned_images, self.resize_size)
 
-        # Step 7: For each aligned image, compute a bounding box from the new landmarks and crop it.
-        final_faces = []
-        for i, aligned in enumerate(aligned_images):
-            if i < len(new_landmarks_list):
-                bbox = Cropper.compute_bbox_from_landmarks(new_landmarks_list[i])
-                print(f"Aligned image {i} - Computed bounding box: {bbox}")
-                cropped = self.crop_aligned_face(aligned, bbox)
-                final_faces.append(cropped)
-            else:
-                print(f"Skipping aligned image {i} as no new landmarks detected.")
+        padded_rotated_images = as_tensor(padded_rotated_images, self.device)
 
-        # Step 8: Save the final cropped images.
-        self.save_group(final_faces, file_names[:len(final_faces)], output_dir)
+        # Get detector predictions from padded images.
+        landmarks, indices, bboxes = self.det_model.predict(padded_rotated_images)
+        if landmarks is not None and len(landmarks) == 0:
+            return
+
+        cropped_faces = self.crop_bbox_extended(as_numpy(padded_rotated_images), indices, bboxes, padded_rotated_paddings)
+        self.save_group(cropped_faces, file_names[indices], output_dir)
+
+
+
+
+
 
     def process_dir(self, input_dir: str, output_dir: str | None = None, desc: str | None = "Processing"):
         """
@@ -919,31 +911,34 @@ class Cropper():
         return adjusted
 
     @staticmethod
-    def center_crop(image: np.ndarray, target_size: tuple[int, int] = (1024, 1024)) -> np.ndarray:
+    def crop_empty_borders(image: np.ndarray, threshold: int = 10) -> np.ndarray:
         """
-        Crops the image symmetrically from the center to the target size.
+        Crops away border rows and columns that are 'empty' (i.e. all pixel values below a threshold).
 
         Args:
             image (np.ndarray): Input image with shape (H, W, C).
-            target_size (tuple[int, int], optional): Desired (width, height) of the crop.
-                Defaults to (1024, 1024).
+            threshold (int): Pixel intensity threshold (0-255) below which a pixel is considered empty.
 
         Returns:
-            np.ndarray: The center-cropped image.
-
-        Raises:
-            ValueError: If the input image is smaller than the target size.
+            np.ndarray: The cropped image with empty borders removed.
         """
-        target_w, target_h = target_size  # expecting (width, height)
-        h, w = image.shape[:2]
+        # Convert image to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # Create a binary mask where non-empty pixels are 1.
+        mask = (gray > threshold).astype(np.uint8)
 
-        if w < target_w or h < target_h:
-            raise ValueError(f"Input image size {(w, h)} is smaller than target size {target_size}.")
+        # Find rows and columns that contain at least one non-empty pixel.
+        rows = np.where(mask.sum(axis=1) > 0)[0]
+        cols = np.where(mask.sum(axis=0) > 0)[0]
 
-        start_x = int(round((w - target_w) / 2))
-        start_y = int(round((h - target_h) / 2))
+        if rows.size == 0 or cols.size == 0:
+            # If all pixels are empty, return the original image.
+            return image
 
-        return image[start_y:start_y + target_h, start_x:start_x + target_w]
+        top, bottom = rows[0], rows[-1]
+        left, right = cols[0], cols[-1]
+
+        return image[top:bottom + 1, left:right + 1]
 
     @staticmethod
     def compute_bbox_from_landmarks(landmarks: np.ndarray) -> tuple[float, float, float, float]:
