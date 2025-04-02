@@ -13,16 +13,17 @@ from .models import RRDBNet
 from .models import RetinaFace
 
 from .utils import (
-    STANDARD_LANDMARKS_5, 
-    parse_landmarks_file, 
-    get_ldm_slices, 
-    as_numpy, 
+    STANDARD_LANDMARKS_5,
+    parse_landmarks_file,
+    get_ldm_slices,
+    as_numpy,
     as_tensor,
     read_images,
     as_batch,
     extend_bbox,
     scale_bbox
 )
+
 
 class Cropper():
     """Face cropper class with bonus features.
@@ -137,29 +138,30 @@ class Cropper():
             of an image based on some actual set of face landmarks for 
             that image.
     """
+
     def __init__(
-        self,
-        output_size: int | tuple[int, int] | list[int] = 256,
-        output_format: str | None = None,
-        resize_size: int | tuple[int, int] | list[int] = 1024,
-        face_factor: float = 0.65,
-        strategy: str = "largest",
-        padding: str = "constant",
-        allow_skew: bool = False,
-        landmarks: str | tuple[np.ndarray, np.ndarray] | None = None,
-        attr_groups: dict[str, list[int]] | None = None,
-        mask_groups: dict[str, list[int]] | None = None,
-        det_threshold: float | None = 0.6,
-        enh_threshold: float | None = None,
-        batch_size: int = 8,
-        num_processes: int = 1,
-        device: str | torch.device = "cpu",
-        crop_mode: str = "aligned",
-        expansion_top: float = 0.5,
-        expansion_bottom: float = 0.2,
-        expansion_left: float = 0.3,
-        expansion_right: float = 0.3,
-        **kwargs):
+            self,
+            output_size: int | tuple[int, int] | list[int] = 256,
+            output_format: str | None = None,
+            resize_size: int | tuple[int, int] | list[int] = 1024,
+            face_factor: float = 0.65,
+            strategy: str = "largest",
+            padding: str = "constant",
+            allow_skew: bool = False,
+            landmarks: str | tuple[np.ndarray, np.ndarray] | None = None,
+            attr_groups: dict[str, list[int]] | None = None,
+            mask_groups: dict[str, list[int]] | None = None,
+            det_threshold: float | None = 0.6,
+            enh_threshold: float | None = None,
+            batch_size: int = 8,
+            num_processes: int = 1,
+            device: str | torch.device = "cpu",
+            crop_mode: str = "aligned",
+            expansion_top: float = 0.5,
+            expansion_bottom: float = 0.2,
+            expansion_left: float = 0.3,
+            expansion_right: float = 0.3,
+            **kwargs):
         """Initializes the cropper.
 
         Initializes class attributes. 
@@ -334,13 +336,13 @@ class Cropper():
         # Modify attributes to have proper type
         if isinstance(self.output_size, int):
             self.output_size = (self.output_size, self.output_size)
-        
+
         if len(self.output_size) == 1:
             self.output_size = (self.output_size[0], self.output_size[0])
-        
+
         if isinstance(self.resize_size, int):
             self.resize_size = (self.resize_size, self.resize_size)
-        
+
         if len(self.resize_size) == 1:
             self.resize_size = (self.resize_size[0], self.resize_size[0])
 
@@ -353,7 +355,7 @@ class Cropper():
         # Further attributes
         self._init_models()
         self._init_landmarks_target()
-    
+
     def _init_models(self):
         """Initializes detection, enhancement and parsing models.
 
@@ -388,18 +390,18 @@ class Cropper():
             # If detection threshold is set, we will predict landmarks
             self.det_model = RetinaFace(self.strategy, self.det_threshold)
             self.det_model.load(device=self.device)
-        
+
         if self.enh_threshold is not None:
             # If enhancement threshold is set, we might enhance quality
             self.enh_model = RRDBNet(self.enh_threshold)
             self.enh_model.load(device=self.device)
-        
+
         if self.attr_groups is not None or self.mask_groups is not None:
             # If grouping by attributes or masks is set, use parse model
             args = (self.attr_groups, self.mask_groups, self.batch_size)
             self.par_model = BiSeNet(*args)
             self.par_model.load(device=self.device)
-    
+
     def _init_landmarks_target(self):
         """Initializes target landmarks set.
 
@@ -437,7 +439,7 @@ class Cropper():
                 raise ValueError(f"Unsupported number of standard landmarks "
                                  f"for estimating alignment transform matrix: "
                                  f"{self.num_std_landmarks}.")
-        
+
         # Apply appropriate scaling based on face factor and out size
         std_landmarks[:, 0] *= self.output_size[0] * self.face_factor
         std_landmarks[:, 1] *= self.output_size[1] * self.face_factor
@@ -449,50 +451,60 @@ class Cropper():
         # Pass STD landmarks as target landms
         self.landmarks_target = std_landmarks
 
-    def align_face(self, images: np.ndarray | list[np.ndarray], indices: list[int],
-                   landmarks_source: np.ndarray) -> np.ndarray:
+    def align_face(self, image: np.ndarray, landmarks_source: np.ndarray) -> np.ndarray:
         """
-        Applies an affine transformation (rotation) to each unpadded image based on the detected landmarks.
+        Applies an affine transformation to the unpadded image based on the detected landmarks,
+        producing a rotated (aligned) image that contains the entire rotated content.
 
         Args:
-            images: A batch (or list) of unpadded images (each should be the original image resized without padding).
-            indices: A list mapping each detected face (landmarks set) to its corresponding image index.
-            landmarks_source: A NumPy array of shape (num_faces, self.num_std_landmarks, 2) with the detected landmarks,
-                              adjusted to the unpadded image coordinate system.
+            image (np.ndarray): The unpadded image (for example, the original image resized
+                                while preserving aspect ratio, without extra padding).
+            landmarks_source (np.ndarray): Detected landmarks for the face in the image (shape: (num_landmarks, 2)).
 
         Returns:
-            A NumPy array of rotated (aligned) images with dimensions given by self.output_size.
+            np.ndarray: The rotated (aligned) image. Its dimensions are determined based on the rotated corners.
         """
-        transformed_images = []
-        border_mode = getattr(cv2, f"BORDER_{self.padding.upper()}")
+        # Choose transformation function.
+        transform_function = cv2.estimateAffinePartial2D if not self.allow_skew else cv2.estimateAffine2D
 
-        for j, image_idx in enumerate(indices):
-            if self.allow_skew:
-                transform_function = cv2.estimateAffine2D
-            else:
-                transform_function = cv2.estimateAffinePartial2D
+        # Compute the affine transformation matrix mapping source landmarks to target landmarks.
+        result = transform_function(landmarks_source, self.landmarks_target, ransacReprojThreshold=np.inf)
+        M = result[0] if result is not None else None
+        if M is None:
+            print("Warning: Could not compute transformation matrix. Returning original image.")
+            return image
 
-            result = transform_function(
-                landmarks_source[j],
-                self.landmarks_target,
-                ransacReprojThreshold=np.inf,
-            )
-            transform_matrix = result[0] if result is not None else None
-            if transform_matrix is None:
-                print(f"Warning: Unable to compute transform for image {image_idx}.")
-                continue
+        # Compute the new canvas size and translation offset based on the rotated image corners.
+        (out_w, out_h), (min_x, min_y) = Cropper.compute_rotated_size(image, M)
+        # Adjust the transformation matrix so that the rotated image fits entirely.
+        M_adjusted = M.copy()
+        M_adjusted[0, 2] -= min_x
+        M_adjusted[1, 2] -= min_y
 
-            image = images[image_idx]
-            rotated = cv2.warpAffine(image, transform_matrix, self.output_size, borderMode=border_mode)
-            transformed_images.append(rotated)
+        # Apply the affine transformation.
+        aligned = cv2.warpAffine(image, M_adjusted, (out_w, out_h),
+                                 borderMode=getattr(cv2, f"BORDER_{self.padding.upper()}"))
+        return aligned
 
-        return np.stack(transformed_images) if transformed_images else np.array([])
+    def crop_aligned_face(self, aligned_image: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray:
+        """
+        Crops the aligned image using the provided bounding box.
+
+        Args:
+            aligned_image (np.ndarray): The rotated (aligned) image.
+            bbox (tuple[float, float, float, float]): Bounding box (x1, y1, x2, y2) to crop from the aligned image.
+
+        Returns:
+            np.ndarray: The cropped region of the aligned image.
+        """
+        x1, y1, x2, y2 = bbox
+        return aligned_image[int(round(y1)):int(round(y2)), int(round(x1)):int(round(x2))]
 
     def save_group(
-        self,
-        faces: np.ndarray,
-        file_names: list[str],
-        output_dir: str,
+            self,
+            faces: np.ndarray,
+            file_names: list[str],
+            output_dir: str,
     ):
         """Saves a group of images to output directory.
 
@@ -519,7 +531,7 @@ class Cropper():
         if len(faces) == 0:
             # Just return
             return
-        
+
         # Create output directory, name counts
         os.makedirs(output_dir, exist_ok=True)
         file_name_counts = defaultdict(lambda: -1)
@@ -536,7 +548,7 @@ class Cropper():
                 # Attach numbering to filenames
                 file_name_counts[file_name] += 1
                 name += f"_{file_name_counts[file_name]}"
-            
+
             if face.ndim == 3:
                 # If it's a colored img (not a mask), to BGR
                 face = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
@@ -544,14 +556,14 @@ class Cropper():
             # Make image path based on file format and save
             file_path = os.path.join(output_dir, name + ext)
             cv2.imwrite(file_path, face)
-    
+
     def save_groups(
-        self,
-        faces: np.ndarray,
-        file_names: np.ndarray,
-        output_dir: str,
-        attr_groups: dict[str, list[int]] | None,
-        mask_groups: dict[str, tuple[list[int], np.ndarray]] | None,
+            self,
+            faces: np.ndarray,
+            file_names: np.ndarray,
+            output_dir: str,
+            attr_groups: dict[str, list[int]] | None,
+            mask_groups: dict[str, tuple[list[int], np.ndarray]] | None,
     ):
         """Saves images (and masks) group-wise.
 
@@ -660,7 +672,7 @@ class Cropper():
         if attr_groups is None:
             # No-name group of idx mapping to all faces
             attr_groups = {'': list(range(len(faces)))}
-        
+
         if mask_groups is None:
             # No-name group mapping to all faces, with no masks
             mask_groups = {'': (list(range(len(faces))), None)}
@@ -741,29 +753,29 @@ class Cropper():
             cropped_faces = self.crop_align(as_numpy(images_batch), paddings, indices, landmarks)
             self.save_group(cropped_faces, file_names[indices], output_dir)
 
-    def process_batch_aligned_output(self, file_names: list[str], input_dir: str, output_dir: str):
+    def process_batch_with_aligned_landmarks(self, file_names: list[str], input_dir: str, output_dir: str):
         """
-        Processes a batch of images and outputs the rotated (aligned) images after removing padding.
-
-        Steps:
-          1. Read the original images.
-          2. Generate padded images using as_batch.
-          3. Run the detector on the padded images to obtain landmarks.
-          4. Remove padding from the padded images, and adjust the detected landmark coordinates
-             by subtracting the top/left padding.
-          5. Apply the affine transformation (rotation) on the unpadded images via align_face.
-          6. Save the rotated images for inspection.
+        Processes a batch of images and outputs the final cropped faces by:
+          1. Reading the original images.
+          2. Generating padded images using as_batch.
+          3. Running the detector on the padded images to obtain landmarks.
+          4. Removing the padding from the padded images and adjusting landmark coordinates.
+          5. Aligning (rotating) the unpadded images using align_face.
+          6. Re-detecting landmarks on each aligned image individually.
+          7. Computing a tight bounding box from the newly detected landmarks.
+          8. Cropping the aligned image using crop_aligned_face.
+          9. Saving the final cropped face images.
         """
         # Step 1: Read original images.
         images, file_names = read_images(file_names, input_dir)
 
-        # Step 2: Generate padded images (e.g., 1024x1024) using as_batch.
+        # Step 2: Generate padded images.
         padded_images, unscales, paddings = as_batch(images, self.resize_size)
         padded_images = as_numpy(padded_images)
 
-        # Step 3: Run the detector on the padded images.
+        # Step 3: Run detector on padded images.
         images_tensor = as_tensor(padded_images, self.device)
-        landmarks, indices, bboxes = self.det_model.predict(images_tensor)
+        landmarks, indices, _ = self.det_model.predict(images_tensor)
         if landmarks is None or len(landmarks) == 0:
             print("No faces detected.")
             return
@@ -778,23 +790,52 @@ class Cropper():
                 unpadded = img
             unpadded_images.append(unpadded)
 
-        # Step 5: Adjust landmark coordinates by subtracting the padding offsets.
+        # Step 5: Adjust landmark coordinates by subtracting padding offsets.
         adjusted_landmarks = []
         for j, img_idx in enumerate(indices):
             if paddings is not None:
                 t, b, l, r = paddings[img_idx]
             else:
                 t, l = 0, 0
-            # Subtract the (left, top) offset from the landmarks.
             adjusted = landmarks[j] - np.array([l, t])
             adjusted_landmarks.append(adjusted)
         adjusted_landmarks = np.array(adjusted_landmarks)
 
-        # Step 6: Apply the affine transformation (rotation) using align_face.
-        rotated_images = self.align_face(unpadded_images, indices, adjusted_landmarks)
+        # Step 6: For each detection, apply align_face on the corresponding unpadded image.
+        aligned_images = []
+        for k, img_idx in enumerate(indices):
+            aligned = self.align_face(unpadded_images[img_idx], adjusted_landmarks[k])
+            aligned_images.append(aligned)
 
-        # Step 7: Save the rotated images.
-        self.save_group(rotated_images, file_names[indices], output_dir)
+        # Step 7: Re-detect landmarks on each aligned image individually.
+        new_landmarks_list = []
+        new_indices_list = []
+        for i, aligned in enumerate(aligned_images):
+            # Create a batch of one image.
+            aligned_batch = np.expand_dims(aligned, axis=0)
+            aligned_tensor = as_tensor(aligned_batch, self.device)
+            lm, ind, _ = self.det_model.predict(aligned_tensor)
+            if lm is not None and len(lm) > 0:
+                new_landmarks_list.append(lm[0])
+                new_indices_list.append(i)
+            else:
+                print(f"No landmarks detected on aligned image {i}.")
+
+        # Step 8: For each aligned image, compute a bounding box from the new landmarks and crop it.
+        final_faces = []
+        for i, aligned in enumerate(aligned_images):
+            if i < len(new_landmarks_list):
+                bbox = Cropper.compute_bbox_from_landmarks(new_landmarks_list[i])
+                print(f"Aligned image {i} - Computed bounding box: {bbox}")
+                cropped = self.crop_aligned_face(aligned, bbox)
+                final_faces.append(cropped)
+            else:
+                print(f"Skipping aligned image {i} as no new landmarks were detected.")
+
+        # Step 9: Save the final cropped images.
+        # Instead of np.array(final_faces), which fails if shapes are inhomogeneous,
+        # pass the list directly.
+        self.save_group(final_faces, file_names[:len(final_faces)], output_dir)
 
     def process_dir(self, input_dir: str, output_dir: str | None = None, desc: str | None = "Processing"):
         """
@@ -825,7 +866,7 @@ class Cropper():
         # Choose the processing function based on crop_mode.
         if self.crop_mode == "aligned":
             print("Using aligned (rotated) processing approach.")
-            process_fn = self.process_batch_aligned_output
+            process_fn = self.process_batch_with_aligned_landmarks
         else:
             print("Using bounding box (non-rotated) processing approach.")
             process_fn = self.process_batch
@@ -839,3 +880,70 @@ class Cropper():
             list(imap)
 
 
+    def compute_landmarks_on_aligned_image(self, aligned_images: np.ndarray) -> tuple[np.ndarray, list[int], np.ndarray]:
+        """
+        Detects facial landmarks on a batch of aligned images.
+
+        Args:
+            aligned_images (np.ndarray): An array of aligned images of shape (N, H, W, 3) in RGB format.
+
+        Returns:
+            tuple: A tuple (landmarks, indices, bboxes) where:
+                - landmarks is a NumPy array of shape (num_faces, 5, 2) containing the detected landmarks.
+                - indices is a list mapping each detection to its corresponding image index.
+                - bboxes is a NumPy array of shape (num_faces, 4) containing the bounding boxes.
+        """
+        # Convert aligned images from (N, H, W, 3) to (N, 3, H, W) as required by the model.
+        image_tensor = torch.from_numpy(aligned_images).permute(0, 3, 1, 2).float().to(self.device)
+        # Run the detector on the aligned images.
+        landmarks, indices, bboxes = self.det_model.predict(image_tensor)
+        return landmarks, indices, bboxes
+
+    @staticmethod
+    def compute_bbox_from_landmarks(landmarks: np.ndarray) -> tuple[float, float, float, float]:
+        """
+        Computes a tight axis-aligned bounding box around the given landmarks.
+
+        Args:
+            landmarks (np.ndarray): Array of shape (num_landmarks, 2) with landmark coordinates.
+
+        Returns:
+            tuple: (x1, y1, x2, y2) representing the bounding box.
+        """
+        x1 = float(np.min(landmarks[:, 0]))
+        y1 = float(np.min(landmarks[:, 1]))
+        x2 = float(np.max(landmarks[:, 0]))
+        y2 = float(np.max(landmarks[:, 1]))
+        return (x1, y1, x2, y2)
+
+    @staticmethod
+    def compute_rotated_size(image: np.ndarray, M: np.ndarray) -> tuple[tuple[int, int], tuple[float, float]]:
+        """
+        Computes the size of the output canvas needed to contain the entire rotated image,
+        and the minimum (x, y) coordinates of the rotated corners.
+
+        Args:
+            image (np.ndarray): The input image.
+            M (np.ndarray): The 2x3 affine transformation matrix.
+
+        Returns:
+            output_size (tuple[int, int]): (width, height) of the rotated image canvas.
+            offset (tuple[float, float]): The minimum (x, y) coordinates of the rotated corners.
+        """
+        h, w = image.shape[:2]
+        # Define the image corners in homogeneous coordinates.
+        corners = np.array([
+            [0, 0, 1],
+            [w, 0, 1],
+            [w, h, 1],
+            [0, h, 1]
+        ], dtype=np.float32)
+        # Transform the corners.
+        rotated_corners = (M @ corners.T).T
+        min_x = np.min(rotated_corners[:, 0])
+        max_x = np.max(rotated_corners[:, 0])
+        min_y = np.min(rotated_corners[:, 1])
+        max_y = np.max(rotated_corners[:, 1])
+        out_w = int(np.ceil(max_x - min_x))
+        out_h = int(np.ceil(max_y - min_y))
+        return (out_w, out_h), (min_x, min_y)
