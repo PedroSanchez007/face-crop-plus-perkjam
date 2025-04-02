@@ -488,20 +488,6 @@ class Cropper():
                                  borderMode=getattr(cv2, f"BORDER_{self.padding.upper()}"))
         return aligned
 
-    def crop_aligned_face(self, aligned_image: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray:
-        """
-        Crops the aligned image using the provided bounding box.
-
-        Args:
-            aligned_image (np.ndarray): The rotated (aligned) image.
-            bbox (tuple[float, float, float, float]): Bounding box (x1, y1, x2, y2) to crop from the aligned image.
-
-        Returns:
-            np.ndarray: The cropped region of the aligned image.
-        """
-        x1, y1, x2, y2 = bbox
-        return aligned_image[int(round(y1)):int(round(y2)), int(round(x1)):int(round(x2))]
-
     def save_group(
             self,
             faces: np.ndarray,
@@ -857,25 +843,6 @@ class Cropper():
                 imap = tqdm.tqdm(imap, total=len(file_batches), desc=desc)
             list(imap)
 
-    def compute_landmarks_on_aligned_image(self, aligned_images: np.ndarray) -> tuple[np.ndarray, list[int], np.ndarray]:
-        """
-        Detects facial landmarks on a batch of aligned images.
-
-        Args:
-            aligned_images (np.ndarray): An array of aligned images of shape (N, H, W, 3) in RGB format.
-
-        Returns:
-            tuple: A tuple (landmarks, indices, bboxes) where:
-                - landmarks is a NumPy array of shape (num_faces, 5, 2) containing the detected landmarks.
-                - indices is a list mapping each detection to its corresponding image index.
-                - bboxes is a NumPy array of shape (num_faces, 4) containing the bounding boxes.
-        """
-        # Convert aligned images from (N, H, W, 3) to (N, 3, H, W) as required by the model.
-        image_tensor = torch.from_numpy(aligned_images).permute(0, 3, 1, 2).float().to(self.device)
-        # Run the detector on the aligned images.
-        landmarks, indices, bboxes = self.det_model.predict(image_tensor)
-        return landmarks, indices, bboxes
-
     @staticmethod
     def adjust_landmarks_to_original(landmarks: np.ndarray, original_shape: tuple[int, int],
                                      padded_shape: tuple[int, int], padding: tuple[int, int, int, int]) -> np.ndarray:
@@ -936,23 +903,6 @@ class Cropper():
         left, right = cols[0], cols[-1]
 
         return image[top:bottom + 1, left:right + 1]
-
-    @staticmethod
-    def compute_bbox_from_landmarks(landmarks: np.ndarray) -> tuple[float, float, float, float]:
-        """
-        Computes a tight axis-aligned bounding box around the given landmarks.
-
-        Args:
-            landmarks (np.ndarray): Array of shape (num_landmarks, 2) with landmark coordinates.
-
-        Returns:
-            tuple: (x1, y1, x2, y2) representing the bounding box.
-        """
-        x1 = float(np.min(landmarks[:, 0]))
-        y1 = float(np.min(landmarks[:, 1]))
-        x2 = float(np.max(landmarks[:, 0]))
-        y2 = float(np.max(landmarks[:, 1]))
-        return (x1, y1, x2, y2)
 
     @staticmethod
     def compute_rotated_size(image: np.ndarray, M: np.ndarray) -> tuple[tuple[int, int], tuple[float, float]]:
