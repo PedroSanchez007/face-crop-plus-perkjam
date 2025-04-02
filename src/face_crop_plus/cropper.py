@@ -758,9 +758,10 @@ class Cropper():
           3. Running the detector on the padded images to obtain landmarks.
           4. Converting the detected landmark coordinates from the padded image system to the original image system.
           5. Aligning (rotating) the original image using align_face with the adjusted landmarks.
-          6. (Optionally) Re-detecting landmarks on each aligned image to compute a tight bounding box.
-          7. Cropping the aligned image using crop_aligned_face.
-          8. Saving the final cropped face images.
+          6. Generating padded images using as_batch on the rotated images.
+          7. Running the detector on the new images to obtain landmarks.
+          8. Extend the original images using crop_bbox_extended.
+          9. Saving the final cropped face images.
         """
         # Step 1: Read original images.
         original_images, file_names = read_images(file_names, input_dir)
@@ -776,10 +777,8 @@ class Cropper():
             print("No faces detected.")
             return
 
-        # Padded shape is given by self.resize_size (treated as (height, width)).
-        padded_shape = (self.resize_size[1], self.resize_size[0])  # e.g., (1024, 1024)
-
         # Step 4: For each detection, adjust landmarks from padded to original coordinates.
+        padded_shape = (self.resize_size[1], self.resize_size[0])
         adjusted_landmarks = []
         for j, img_idx in enumerate(padded_original_indices):
             # Get the padding values for this image.
@@ -800,23 +799,21 @@ class Cropper():
             cropped_aligned_image = Cropper.crop_empty_borders(aligned_image, threshold=10)
             aligned_images.append(cropped_aligned_image)
 
-        # Step 5b: Scale and pad the images to 1024x1024 for detection
+        # Step 6: Scale and pad the images to 1024x1024 for detection
         padded_rotated_images, padded_rotated_unscales, padded_rotated_paddings = as_batch(aligned_images, self.resize_size)
-
         padded_rotated_images = as_tensor(padded_rotated_images, self.device)
 
-        # Get detector predictions from padded images.
+        # Step 7: Get detector predictions from padded images.
         landmarks, indices, bboxes = self.det_model.predict(padded_rotated_images)
         if landmarks is not None and len(landmarks) == 0:
             return
 
+        # Step 8: Get an extended boundary box crop of the image. The extended boundary box is the box around the face
+        # extended out to contain more of the image around the face and head.
         cropped_faces = self.crop_bbox_extended(as_numpy(padded_rotated_images), indices, bboxes, padded_rotated_paddings)
+
+        # Step 9: Save the final cropped images.
         self.save_group(cropped_faces, file_names[indices], output_dir)
-
-
-
-
-
 
     def process_dir(self, input_dir: str, output_dir: str | None = None, desc: str | None = "Processing"):
         """
