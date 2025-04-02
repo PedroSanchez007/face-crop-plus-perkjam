@@ -732,7 +732,7 @@ class Cropper():
             cropped_faces.append(cropped_face)
         return cropped_faces
 
-    def process_batch(self, file_names: list[str], input_dir: str, output_dir: str):
+    def process_batch_without_rotation(self, file_names: list[str], input_dir: str, output_dir: str):
         """
         Processes a batch of images.
         """
@@ -745,31 +745,25 @@ class Cropper():
         if landmarks is not None and len(landmarks) == 0:
             return
 
-        if self.crop_mode == "bbox":
-            cropped_faces = self.crop_bbox_extended(as_numpy(images), indices, bboxes, paddings)
-            self.save_group(cropped_faces, file_names[indices], output_dir)
-        else:
-            # Use padded images for rotation-based cropping
-            cropped_faces = self.crop_align(as_numpy(images_batch), paddings, indices, landmarks)
-            self.save_group(cropped_faces, file_names[indices], output_dir)
+        cropped_faces = self.crop_bbox_extended(as_numpy(images), indices, bboxes, paddings)
+        self.save_group(cropped_faces, file_names[indices], output_dir)
 
-    def process_batch_with_aligned_landmarks(self, file_names: list[str], input_dir: str, output_dir: str):
+    def process_batch_with_rotation(self, file_names: list[str], input_dir: str, output_dir: str):
         """
         Processes a batch of images and outputs the final cropped faces by:
           1. Reading the original images.
           2. Generating padded images using as_batch.
           3. Running the detector on the padded images to obtain landmarks.
-          4. Removing the padding from the padded images and adjusting landmark coordinates.
-          5. Aligning (rotating) the unpadded images using align_face.
-          6. Re-detecting landmarks on each aligned image individually.
-          7. Computing a tight bounding box from the newly detected landmarks.
-          8. Cropping the aligned image using crop_aligned_face.
-          9. Saving the final cropped face images.
+          4. Converting the detected landmark coordinates from the padded image system to the original image system.
+          5. Aligning (rotating) the original image using align_face with the adjusted landmarks.
+          6. (Optionally) Re-detecting landmarks on each aligned image to compute a tight bounding box.
+          7. Cropping the aligned image using crop_aligned_face.
+          8. Saving the final cropped face images.
         """
         # Step 1: Read original images.
         images, file_names = read_images(file_names, input_dir)
 
-        # Step 2: Generate padded images.
+        # Step 2: Generate padded images (e.g., 1024x1024) using as_batch.
         padded_images, unscales, paddings = as_batch(images, self.resize_size)
         padded_images = as_numpy(padded_images)
 
@@ -780,38 +774,35 @@ class Cropper():
             print("No faces detected.")
             return
 
-        # Step 4: Remove padding from each padded image.
-        unpadded_images = []
-        for i, img in enumerate(padded_images):
-            if paddings is not None:
-                t, b, l, r = paddings[i]
-                unpadded = img[t:img.shape[0] - b, l:img.shape[1] - r]
-            else:
-                unpadded = img
-            unpadded_images.append(unpadded)
+        # Padded shape is given by self.resize_size (treated as (height, width)).
+        padded_shape = (self.resize_size[1], self.resize_size[0])  # e.g., (1024, 1024)
 
-        # Step 5: Adjust landmark coordinates by subtracting padding offsets.
+        # Step 4: For each detection, adjust landmarks from padded to original coordinates.
         adjusted_landmarks = []
         for j, img_idx in enumerate(indices):
+            # Get the padding values for this image.
             if paddings is not None:
-                t, b, l, r = paddings[img_idx]
+                pad_vals = paddings[img_idx]  # (top, bottom, left, right)
             else:
-                t, l = 0, 0
-            adjusted = landmarks[j] - np.array([l, t])
+                pad_vals = (0, 0, 0, 0)
+            orig_shape = images[img_idx].shape[:2]  # (height, width)
+            adjusted = Cropper.adjust_landmarks_to_original(landmarks[j], orig_shape, padded_shape, pad_vals)
             adjusted_landmarks.append(adjusted)
         adjusted_landmarks = np.array(adjusted_landmarks)
 
-        # Step 6: For each detection, apply align_face on the corresponding unpadded image.
+        # Step 5: For each detection, use the original image and the adjusted landmarks to align (rotate) the image.
         aligned_images = []
         for k, img_idx in enumerate(indices):
-            aligned = self.align_face(unpadded_images[img_idx], adjusted_landmarks[k])
-            aligned_images.append(aligned)
+            # Use the original image here.
+            aligned = self.align_face(images[img_idx], adjusted_landmarks[k])
+            # Optionally, center crop back to 1024x1024.
+            aligned_cropped = Cropper.center_crop(aligned, target_size=(1024, 1024))
+            aligned_images.append(aligned_cropped)
 
-        # Step 7: Re-detect landmarks on each aligned image individually.
+        # Step 6: Re-detect landmarks on each aligned image individually.
         new_landmarks_list = []
         new_indices_list = []
         for i, aligned in enumerate(aligned_images):
-            # Create a batch of one image.
             aligned_batch = np.expand_dims(aligned, axis=0)
             aligned_tensor = as_tensor(aligned_batch, self.device)
             lm, ind, _ = self.det_model.predict(aligned_tensor)
@@ -821,7 +812,7 @@ class Cropper():
             else:
                 print(f"No landmarks detected on aligned image {i}.")
 
-        # Step 8: For each aligned image, compute a bounding box from the new landmarks and crop it.
+        # Step 7: For each aligned image, compute a bounding box from the new landmarks and crop it.
         final_faces = []
         for i, aligned in enumerate(aligned_images):
             if i < len(new_landmarks_list):
@@ -830,11 +821,9 @@ class Cropper():
                 cropped = self.crop_aligned_face(aligned, bbox)
                 final_faces.append(cropped)
             else:
-                print(f"Skipping aligned image {i} as no new landmarks were detected.")
+                print(f"Skipping aligned image {i} as no new landmarks detected.")
 
-        # Step 9: Save the final cropped images.
-        # Instead of np.array(final_faces), which fails if shapes are inhomogeneous,
-        # pass the list directly.
+        # Step 8: Save the final cropped images.
         self.save_group(final_faces, file_names[:len(final_faces)], output_dir)
 
     def process_dir(self, input_dir: str, output_dir: str | None = None, desc: str | None = "Processing"):
@@ -866,10 +855,10 @@ class Cropper():
         # Choose the processing function based on crop_mode.
         if self.crop_mode == "aligned":
             print("Using aligned (rotated) processing approach.")
-            process_fn = self.process_batch_with_aligned_landmarks
+            process_fn = self.process_batch_with_rotation
         else:
             print("Using bounding box (non-rotated) processing approach.")
-            process_fn = self.process_batch
+            process_fn = self.process_batch_without_rotation
 
         # Process batches in parallel.
         worker = partial(process_fn, input_dir=input_dir, output_dir=output_dir)
@@ -878,7 +867,6 @@ class Cropper():
             if desc is not None:
                 imap = tqdm.tqdm(imap, total=len(file_batches), desc=desc)
             list(imap)
-
 
     def compute_landmarks_on_aligned_image(self, aligned_images: np.ndarray) -> tuple[np.ndarray, list[int], np.ndarray]:
         """
@@ -898,6 +886,64 @@ class Cropper():
         # Run the detector on the aligned images.
         landmarks, indices, bboxes = self.det_model.predict(image_tensor)
         return landmarks, indices, bboxes
+
+    @staticmethod
+    def adjust_landmarks_to_original(landmarks: np.ndarray, original_shape: tuple[int, int],
+                                     padded_shape: tuple[int, int], padding: tuple[int, int, int, int]) -> np.ndarray:
+        """
+        Converts landmark coordinates from the padded image coordinate system back to the original image coordinate system.
+
+        Args:
+            landmarks (np.ndarray): Array of shape (num_landmarks, 2) with landmark coordinates detected on the padded image.
+            original_shape (tuple[int, int]): The original image shape as (height, width).
+            padded_shape (tuple[int, int]): The shape of the padded image as (height, width) (e.g. 1024x1024).
+            padding (tuple[int, int, int, int]): The padding applied to the original image to create the padded image, as (top, bottom, left, right).
+
+        Returns:
+            np.ndarray: The adjusted landmark coordinates in the original image coordinate system.
+        """
+        orig_h, orig_w = original_shape
+        padded_h, padded_w = padded_shape
+        pad_top, pad_bottom, pad_left, pad_right = padding
+
+        # The effective region in the padded image is the padded image minus the padding.
+        effective_w = padded_w - (pad_left + pad_right)
+        effective_h = padded_h - (pad_top + pad_bottom)
+
+        # Scale factors from effective region to original image.
+        scale_x = orig_w / effective_w
+        scale_y = orig_h / effective_h
+
+        # Adjust the landmarks: first subtract the left/top padding, then scale.
+        adjusted = (landmarks - np.array([pad_left, pad_top])) * np.array([scale_x, scale_y])
+        return adjusted
+
+    @staticmethod
+    def center_crop(image: np.ndarray, target_size: tuple[int, int] = (1024, 1024)) -> np.ndarray:
+        """
+        Crops the image symmetrically from the center to the target size.
+
+        Args:
+            image (np.ndarray): Input image with shape (H, W, C).
+            target_size (tuple[int, int], optional): Desired (width, height) of the crop.
+                Defaults to (1024, 1024).
+
+        Returns:
+            np.ndarray: The center-cropped image.
+
+        Raises:
+            ValueError: If the input image is smaller than the target size.
+        """
+        target_w, target_h = target_size  # expecting (width, height)
+        h, w = image.shape[:2]
+
+        if w < target_w or h < target_h:
+            raise ValueError(f"Input image size {(w, h)} is smaller than target size {target_size}.")
+
+        start_x = int(round((w - target_w) / 2))
+        start_y = int(round((h - target_h) / 2))
+
+        return image[start_y:start_y + target_h, start_x:start_x + target_w]
 
     @staticmethod
     def compute_bbox_from_landmarks(landmarks: np.ndarray) -> tuple[float, float, float, float]:
