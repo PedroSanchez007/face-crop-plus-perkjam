@@ -815,61 +815,47 @@ class Cropper():
             cropped_faces = self.crop_align(as_numpy(images_batch), paddings, indices, landmarks)
             self.save_group(cropped_faces, file_names[indices], output_dir)
 
-    def process_dir(
-        self, 
-        input_dir: str, 
-        output_dir: str | None = None,
-        desc: str | None = "Processing",
-    ):
-        """Processes images in the specified input directory.
+    def process_dir(self, input_dir: str, output_dir: str | None = None, desc: str | None = "Processing",
+                    process_fn=None):
+        """
+        Processes images in the specified input directory.
 
-        Splits all the file names in the input directory to batches 
-        and processes batches on multiple cores. For every file name 
-        batch, images are loaded, some are optionally enhanced, 
-        landmarks are generated and used to optionally align and 
-        center-crop faces, and grouping is optionally applied based on
-        face attributes. For more details, check 
-        :meth:`process_batch`.
-
-        Note:
-            There might be a few seconds delay before the actual 
-            processing starts if there are a lot of files in the 
-            directory - it takes some time to split all the file names 
-            to batches.
+        Splits the image file names into batches and processes each batch on multiple cores.
+        You can pass in the processing function to be used via the process_fn parameter.
+        If output_dir is not specified, it will be automatically set to:
+             input_dir + "_" + self.crop_mode + "_faces"
+        so that the output folder reflects the current crop_mode.
 
         Args:
-            input_dir: Path to input directory with image files.
-            output_dir: Path to output directory to save the extracted 
-                (and optionally grouped to sub-directories) face images. 
-                If None, then the same path as for ``input_dir`` is used 
-                and additionally "_faces" suffix is added to the name.
-            desc: The description to use for the progress bar. If 
-                specified as ``None``, no progress bar is shown. 
-                Defaults to "Processing".
+            input_dir (str): Path to input directory with image files.
+            output_dir (str | None): Path to output directory for saving face images. If None, it is
+                                     generated based on the input_dir and crop_mode.
+            desc (str | None): Description for the progress bar.
+            process_fn (callable | None): Function to process a batch of images.
+                                          If None, defaults to self.process_batch.
         """
         if output_dir is None:
-            # Create a default output dir name
-            output_dir = input_dir + "_faces"
+            output_dir = input_dir + "_" + self.crop_mode + "_faces"
 
-        # Create batches of image file names in input dir
-        files, bs = os.listdir(input_dir), self.batch_size
-        file_batches = [files[i:i+bs] for i in range(0, len(files), bs)]
-
+        files = os.listdir(input_dir)
+        bs = self.batch_size
+        file_batches = [files[i:i + bs] for i in range(0, len(files), bs)]
         if len(file_batches) == 0:
-            # Empty
             return
-        
-        # Define worker function and its additional arguments
-        kwargs = {"input_dir": input_dir, "output_dir": output_dir}
-        worker = partial(self.process_batch, **kwargs)
-        
+
+        from multiprocessing.pool import ThreadPool
+        import tqdm
+
+        # If no processing function is provided, use the default.
+        if process_fn is None:
+            process_fn = self.process_batch
+
+        # Use partial to set input_dir and output_dir for each batch.
+        worker = partial(process_fn, input_dir=input_dir, output_dir=output_dir)
+
         with ThreadPool(self.num_processes, self._init_models) as pool:
-            # Create imap object and apply workers to it
             imap = pool.imap_unordered(worker, file_batches)
-            
             if desc is not None:
-                # If description is provided, wrap progress bar around
                 imap = tqdm.tqdm(imap, total=len(file_batches), desc=desc)
-            
-            # Process
             list(imap)
+
