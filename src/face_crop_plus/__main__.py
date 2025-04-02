@@ -115,6 +115,10 @@ def parse_args() -> dict[str, Any]:
     parser = ArgumentParserWithConfig()
 
     parser.add_argument(
+        "-cm", "--crop-mode", type=str, default="aligned",
+        choices=["aligned", "bbox"],
+        help="Crop mode: 'aligned' for rotation-based alignment, 'bbox' for bounding-box cropping.")
+    parser.add_argument(
         "-i", "--input_dir", type=str, 
         help="Path to input directory with image files.")
     parser.add_argument(

@@ -159,7 +159,6 @@ class Cropper():
         expansion_bottom: float = 0.2,
         expansion_left: float = 0.3,
         expansion_right: float = 0.3,
-        apply_rotation: bool = True,
         **kwargs):
         """Initializes the cropper.
 
@@ -328,7 +327,6 @@ class Cropper():
         self.expansion_bottom = expansion_bottom
         self.expansion_left = expansion_left
         self.expansion_right = expansion_right
-        self.apply_rotation = apply_rotation
 
         # The only option for STD
         self.num_std_landmarks = 5
