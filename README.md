@@ -49,7 +49,7 @@ face-crop-plus -i path/to/images
 
 You can also use it in a Python script:
 ```python
-from face_crop_plus import Cropper
+from face_crop_plus_perkjam import Cropper
 
 cropper = Cropper(face_factor=0.7, strategy="largest")
 cropper.process_dir(input_dir="path/to/images")
@@ -188,7 +188,7 @@ face-crop-plus -i path/to/images --clean-names # --clean-names-inplace (avoids t
 It is possible to specify more arguments via python script. The function can be used in general with any file types:
 
 ```python
-from face_crop_plus.utils import clean_names
+from face_crop_plus_perkjam.utils import clean_names
 
 clean_names(
     input_dir="path/to/input/dir",
@@ -202,7 +202,7 @@ clean_names(
 If you already have aligned and center-cropped face images, you can perform quality enhancement and face parsing without re-cropping them. Here is an example of enhancing quality of every face and parsing them to (note that none of the parameters described in _Alignment and Cropping_ section have any affect here):
 
 ```python
-from face_crop_plus import Cropper
+from face_crop_plus_perkjam import Cropper
 
 cropper = Cropper(
     det_threshold=None,
@@ -256,7 +256,7 @@ Here is an example pipeline of how to pre-process [CelebA](https://mmlab.ie.cuhk
     ```
 3. Create a script file, e.g., `preprocess_celeba.py`, in the same directory:
     ```python
-    from face_crop_plus import Cropper
+    from face_crop_plus_perkjam import Cropper
     from multiprocessing import cpu_count
 
     cropper = Cropper(

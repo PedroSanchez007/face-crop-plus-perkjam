@@ -1,4 +1,4 @@
-from face_crop_plus import Cropper
+from face_crop_plus_perkjam import Cropper
 from torch.cuda import is_available
 from os.path import join, dirname, abspath
 

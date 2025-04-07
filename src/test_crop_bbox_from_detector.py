@@ -3,8 +3,8 @@ import numpy as np
 import torch
 
 # Import your detector and helper functions.
-from face_crop_plus.models import RetinaFace
-from face_crop_plus.utils import extend_bbox, scale_bbox
+from face_crop_plus_perkjam.models import RetinaFace
+from face_crop_plus_perkjam.utils import extend_bbox, scale_bbox
 
 def show_extended_bbox_from_detector(image, expansion_top, expansion_bottom, expansion_left, expansion_right):
     """

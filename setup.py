@@ -4,20 +4,15 @@ with open("README.md", "r", encoding = "utf-8") as f:
     long_description = f.read()
 
 setuptools.setup(
-    name = "face-crop-plus",
+    name = "face-crop-plus-perkjam",
     version = "1.1.0",
-    author = "Mantas Birškus",
-    author_email = "mantix7@gmail.com",
+    author = "Sweeney Todd",
+    author_email = "junkmesend@gmail.com",
     license = "MIT",
     description = f"Automatic face aligner and cropper with quality "
                   f"enhancement and attribute parsing.",
     long_description = long_description,
     long_description_content_type = "text/markdown",
-    url = "https://github.com/mantasu/face-crop-plus",
-    project_urls = {
-        "Documentation": "https://mantasu.github.io/face-crop-plus",
-        "Bug Tracker": "https://github.com/mantasu/face-crop-plus/issues",
-    },
     keywords = [
         "face",
         "python",
@@ -54,9 +49,9 @@ setuptools.setup(
     packages = setuptools.find_packages(where="src"),
     entry_points={
         "console_scripts": [
-            "face-crop-plus-perkjam=face_crop_plus.__main__:main",
-            "face_crop_plus_perkjam=face_crop_plus.__main__:main",
-            "fcpp=face_crop_plus.__main__:main",
+            "face-crop-plus-perkjam=face_crop_plus_perkjam.__main__:main",
+            "face_crop_plus_perkjam=face_crop_plus_perkjam.__main__:main",
+            "fcpp=face_crop_plus_perkjam.__main__:main",
         ]
     },
     python_requires = ">=3.10"

@@ -49,7 +49,7 @@ To use the package in your own python script, simply import ``Cropper`` class, i
 
 .. code-block:: python
 
-    from face_crop_plus import Cropper
+    from face_crop_plus_perkjam import Cropper
 
     cropper = Cropper(face_factor=0.7, strategy="largest")
     cropper.process_dir(input_dir="path/to/images")
@@ -77,7 +77,7 @@ It is possible to specify more arguments via python script. The function can be 
 
 .. code-block:: python
 
-    from face_crop_plus.utils import clean_names
+    from face_crop_plus_perkjam.utils import clean_names
 
     clean_names(
         input_dir="path/to/input/dir",
@@ -92,7 +92,7 @@ If you already have aligned and center-cropped face images, you can perform qual
 
 .. code-block:: python
 
-    from face_crop_plus import Cropper
+    from face_crop_plus_perkjam import Cropper
 
     cropper = Cropper(
         det_threshold=None,
@@ -158,7 +158,7 @@ Here is an example pipeline of how to pre-process `CelebA <https://mmlab.ie.cuhk
 
     .. code-block:: python
 
-        from face_crop_plus import Cropper
+        from face_crop_plus_perkjam import Cropper
         from multiprocessing import cpu_count
 
         cropper = Cropper(

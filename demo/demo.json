@@ -6,7 +6,7 @@
     "resize_size": [1024, 1024],
     "face_factor": 0.75,
     "strategy": "best",
-    "padding": "reflect",
+    "padding": "constant",
     "allow_skew": false,
     "landmarks": null,
     "attr_groups": null,
